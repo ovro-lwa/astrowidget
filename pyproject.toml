@@ -10,7 +10,7 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.11"
 authors = [
-    { name = "UW Scientific Software Engineering Center" },
+    {name = "Cordero Core", email = "cdcore09@gmail.com"},
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -87,6 +87,7 @@ bokeh = ">=3.3"
 mkdocs = ">=1.6"
 mkdocs-material = ">=9.5"
 pymdown-extensions = ">=10.0"
+tomlkit = ">=0.13"
 
 [tool.pixi.tasks]
 build = "npm run build"
@@ -98,4 +99,4 @@ lint = "ruff check src/ tests/"
 docs-serve = { cmd = "mkdocs serve", description = "Serve docs locally at localhost:8000" }
 docs-build = { cmd = "mkdocs build --strict", description = "Build static docs site" }
 vectors = "python tests/generate_test_vectors.py"
-sync-zenodo = { cmd = "python scripts/sync_zenodo.py", description = "Sync .zenodo.json creators from CITATION.cff" }
+sync-zenodo = { cmd = "python scripts/sync_zenodo.py", description = "Sync .zenodo.json and pyproject.toml authors from CITATION.cff" }

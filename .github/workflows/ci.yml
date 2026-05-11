@@ -53,15 +53,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pyyaml
-        run: pip install pyyaml
+      - name: Install dependencies
+        run: pip install pyyaml tomlkit
 
       - name: Run sync script
         run: python scripts/sync_zenodo.py
 
       - name: Check for drift
         run: |
-          if ! git diff --exit-code .zenodo.json; then
-            echo "::error::.zenodo.json is out of sync with CITATION.cff — run 'pixi run sync-zenodo'"
+          if ! git diff --exit-code .zenodo.json pyproject.toml; then
+            echo "::error::Citation metadata is out of sync with CITATION.cff — run 'pixi run sync-zenodo'"
             exit 1
           fi
