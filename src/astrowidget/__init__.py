@@ -4,7 +4,7 @@ Renders radio images on a rotatable celestial sphere with SIN projection,
 reading directly from zarr. No FITS intermediary in the display path.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 from astrowidget.cube import PreloadedCube
 from astrowidget.io import DataSourceError, open_dataset
