@@ -253,7 +253,10 @@ class SkyViewer(param.Parameterized):
         )
 
         if not getattr(self, "_skyviewer_click_observed", False):
-            self._widget.observe(self._on_click, names=["click_tick"])
+            # click_tick: notifies every click even when (l, m) is unchanged.
+            # clicked_lm: still notifies on most real clicks; covers cases where
+            # click_tick is not observed or comm order differs (e.g. some Lab setups).
+            self._widget.observe(self._on_click, names=["click_tick", "clicked_lm"])
             self._skyviewer_click_observed = True
 
         return pn.Row(
