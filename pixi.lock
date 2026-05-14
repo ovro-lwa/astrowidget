@@ -801,7 +801,7 @@ packages:
 - pypi: ./
   name: astrowidget
   version: 0.2.0
-  sha256: 9ea9e278b8d6e680c50530289f1d1bbc7a2c82f7f9a2d7b3ac29ada01f119a1b
+  sha256: c88fd8d5e87b14ab47cd3b5ada7d1939c962b32251216e9a3e328d5dd6b420b0
   requires_dist:
   - anywidget>=0.9
   - traitlets>=5.0
@@ -811,6 +811,7 @@ packages:
   - zarr>=2.16,<3
   - dask[array]>=2024.1
   - numcodecs>=0.12
+  - ipyaladin>=0.7.0 ; extra == 'hips'
   - panel>=1.3,<2 ; extra == 'dashboard'
   - holoviews>=1.18,<2 ; extra == 'dashboard'
   - bokeh>=3.3,<4 ; extra == 'dashboard'

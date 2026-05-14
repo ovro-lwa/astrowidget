@@ -732,6 +732,8 @@ export async function render({ model, el }) {
           const lVal = cdP * Math.sin(dra);
           const mVal = sdP * cd0P - cdP * sd0P * Math.cos(dra);
           model.set("clicked_lm", [lVal, mVal]);
+          const prevTick = model.get("click_tick");
+          model.set("click_tick", (prevTick == null ? 0 : prevTick) + 1);
           model.save_changes();
 
           // Set crosshair position

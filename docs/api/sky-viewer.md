@@ -64,9 +64,9 @@ Returns `pn.Row` containing:
 
 When the user clicks on the sphere in the dashboard:
 
-1. `clicked_lm` traitlet fires with (l, m) direction cosines
-2. The observer extracts spectrum and light curve from `PreloadedCube`
-3. HoloViews `Curve` elements update in the linked views column
+1. JavaScript sets `clicked_coord`, `clicked_lm`, then increments `click_tick` (so Python always gets a notification, even when `(l, m)` is unchanged).
+2. `SkyViewer` observes `click_tick` and reads `clicked_lm` to extract spectrum and light curve from `PreloadedCube`.
+3. HoloViews `Curve` elements update in the linked views column (via `pn.state.execute` so Panel/Bokeh refreshes reliably).
 
 ## Example
 

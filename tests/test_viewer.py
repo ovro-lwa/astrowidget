@@ -104,6 +104,7 @@ class TestSkyViewer:
         l0 = float(ds.coords["l"].values[3])
         m0 = float(ds.coords["m"].values[4])
         viewer._widget.clicked_lm = (l0, m0)
+        viewer._widget.click_tick = viewer._widget.click_tick + 1
 
         assert len(viewer._spectrum_pane.object.dimension_values(1)) == ds.sizes["frequency"]
         assert len(viewer._lightcurve_pane.object.dimension_values(1)) == ds.sizes["time"]

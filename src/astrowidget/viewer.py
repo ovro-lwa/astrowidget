@@ -170,7 +170,7 @@ class SkyViewer(param.Parameterized):
         """Handle click events — update spectrum and light curve panels."""
         if not hasattr(self, "_spectrum_pane"):
             return
-        l_val, m_val = change["new"]
+        l_val, m_val = self._widget.clicked_lm
         l_idx, m_idx = self._cube.nearest_lm_idx(l_val, m_val)
 
         def _apply_click_plots() -> None:
@@ -198,7 +198,7 @@ class SkyViewer(param.Parameterized):
         # HoloViews panes actually re-render (see panel.io.state.state.execute).
         import panel as pn
 
-        pn.state.execute(_apply_click_plots)
+        pn.state.execute(_apply_click_plots, schedule=True)
 
     def panel(self):
         """Create and return the Panel dashboard layout.
@@ -253,7 +253,7 @@ class SkyViewer(param.Parameterized):
         )
 
         if not getattr(self, "_skyviewer_click_observed", False):
-            self._widget.observe(self._on_click, names=["clicked_lm"])
+            self._widget.observe(self._on_click, names=["click_tick"])
             self._skyviewer_click_observed = True
 
         return pn.Row(

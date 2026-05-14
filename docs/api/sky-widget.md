@@ -114,6 +114,7 @@ All traitlets are synced bidirectionally with the JavaScript frontend.
 |---|---|---|---|
 | `clicked_coord` | `Tuple` | `(0, 0)` | Last click (RA, Dec) in degrees |
 | `clicked_lm` | `Tuple` | `(0, 0)` | Last click (l, m) direction cosines |
+| `click_tick` | `Int` | `0` | Increments on every canvas click (JS); use for observers when `clicked_lm` may repeat |
 
 ### Slice Indices
 

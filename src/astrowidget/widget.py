@@ -81,6 +81,8 @@ class SkyWidget(anywidget.AnyWidget):
     # --- Click events (JS → Python) ---
     clicked_coord = traitlets.Tuple((0.0, 0.0)).tag(sync=True)  # (RA, Dec) in degrees
     clicked_lm = traitlets.Tuple((0.0, 0.0)).tag(sync=True)     # (l, m) direction cosines
+    # Monotonic counter so every canvas click notifies Python even if (l, m) is unchanged.
+    click_tick = traitlets.Int(0).tag(sync=True)
 
     # --- Slice indices (wired to PreloadedCube) ---
     time_idx = traitlets.Int(0).tag(sync=True)
