@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 __all__ = ["SkyViewer"]
 
+# HoloViews default color can be a Param Value; Bokeh 3 Line.line_color expects a plain color.
+_HV_LINKED_CURVE_OPTS: dict = {"responsive": True, "height": 250, "color": "#3182bd"}
+
 SURVEY_HIPS = {
     "DSS": "CDS/P/DSS2/color",
     "2MASS": "CDS/P/2MASS/color",
@@ -177,12 +180,13 @@ class SkyViewer(param.Parameterized):
             import holoviews as hv
             from panel.io.notebook import push_notebook
 
+            # Plain hex — HV default Color can be a Param Value that Bokeh 3 rejects.
             spec = self._cube.spectrum(l_idx, m_idx, self.time_idx)
             self._spectrum_pane.object = hv.Curve(
                 (self._cube.freq_mhz, spec),
                 kdims=["Frequency (MHz)"],
                 vdims=["Intensity (Jy/beam)"],
-            ).opts(title=f"Spectrum at l={l_val:.3f}, m={m_val:.3f}", responsive=True, height=250)
+            ).opts(title=f"Spectrum at l={l_val:.3f}, m={m_val:.3f}", **_HV_LINKED_CURVE_OPTS)
 
             lc = self._cube.light_curve(l_idx, m_idx, self.freq_idx)
             self._lightcurve_pane.object = hv.Curve(
@@ -191,8 +195,7 @@ class SkyViewer(param.Parameterized):
                 vdims=["Intensity (Jy/beam)"],
             ).opts(
                 title=f"Light Curve at {self._cube.freq_mhz[self.freq_idx]:.1f} MHz",
-                responsive=True,
-                height=250,
+                **_HV_LINKED_CURVE_OPTS,
             )
 
             # Notebook / JupyterLab: updates triggered from ipywidgets comm do not
@@ -247,13 +250,13 @@ class SkyViewer(param.Parameterized):
         # Linked view panes (updated on click)
         self._spectrum_pane = pn.pane.HoloViews(
             hv.Curve([], kdims=["Frequency (MHz)"], vdims=["Intensity (Jy/beam)"]).opts(
-                title="Click on image for spectrum", responsive=True, height=250
+                title="Click on image for spectrum", **_HV_LINKED_CURVE_OPTS
             ),
             sizing_mode="stretch_width",
         )
         self._lightcurve_pane = pn.pane.HoloViews(
             hv.Curve([], kdims=["Time (MJD)"], vdims=["Intensity (Jy/beam)"]).opts(
-                title="Click on image for light curve", responsive=True, height=250
+                title="Click on image for light curve", **_HV_LINKED_CURVE_OPTS
             ),
             sizing_mode="stretch_width",
         )
