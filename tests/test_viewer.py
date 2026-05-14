@@ -97,7 +97,8 @@ class TestSkyViewer:
 
         ds = _make_dataset()
         viewer = SkyViewer(ds)
-        viewer.panel()
+        layout = viewer.panel()
+        assert layout is viewer._panel_root
 
         assert len(viewer._spectrum_pane.object.dimension_values(1)) == 0
 

@@ -196,8 +196,13 @@ class SkyViewer(param.Parameterized):
             )
 
             # Notebook / JupyterLab: updates triggered from ipywidgets comm do not
-            # automatically flush Bokeh patches; push so linked HoloViews panes redraw.
-            push_notebook(self._spectrum_pane, self._lightcurve_pane)
+            # automatically flush Bokeh patches. Push the displayed layout root —
+            # nested HoloViews panes often have no comm in state._views by themselves.
+            root = getattr(self, "_panel_root", None)
+            if root is not None:
+                push_notebook(root)
+            else:
+                push_notebook(self._spectrum_pane, self._lightcurve_pane)
 
         # ipywidgets comm can arrive while the Bokeh doc is locked; Panel's execute
         # defers only when needed. schedule=True always defers under a session and can
@@ -266,9 +271,10 @@ class SkyViewer(param.Parameterized):
             self._widget.observe(self._on_click, names=["click_tick", "clicked_lm"])
             self._skyviewer_click_observed = True
 
-        return pn.Row(
+        self._panel_root = pn.Row(
             controls,
             sky_pane,
             linked_views,
             sizing_mode="stretch_width",
         )
+        return self._panel_root
