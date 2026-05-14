@@ -1,7 +1,7 @@
 """SkyViewer — Panel dashboard wrapper for SkyWidget.
 
 Composes the interactive sphere widget with controls (time, frequency,
-colormap, stretch) and linked HoloViews panels (spectrum, light curve)
+colormap, stretch) and linked Bokeh line plots (spectrum, light curve)
 that update on click.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import param
 
@@ -17,9 +17,6 @@ if TYPE_CHECKING:
     import xarray as xr
 
 __all__ = ["SkyViewer"]
-
-# HoloViews default color can be a Param Value; Bokeh 3 Line.line_color expects a plain color.
-_HV_LINKED_CURVE_OPTS: dict = {"responsive": True, "height": 250, "color": "#3182bd"}
 
 SURVEY_HIPS = {
     "DSS": "CDS/P/DSS2/color",
@@ -31,6 +28,33 @@ SURVEY_HIPS = {
     "Fermi": "CDS/P/Fermi/color",
     "Haslam408": "CDS/P/HI4PI/NHI",
 }
+
+
+def _linked_bokeh_line_pane(
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    *,
+    line_color: str = "#3182bd",
+) -> tuple[Any, Any, Any]:
+    """Strip chart as Bokeh figure + CDS + Panel pane (avoids HoloViews / Param Value on line_color)."""
+    import panel as pn
+    from bokeh.models import ColumnDataSource
+    from bokeh.plotting import figure as bk_figure
+
+    cds = ColumnDataSource(data=dict(x=[], y=[]))
+    fig = bk_figure(
+        title=title,
+        height=250,
+        sizing_mode="stretch_width",
+        x_axis_label=xlabel,
+        y_axis_label=ylabel,
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+    )
+    fig.toolbar.logo = None
+    fig.line("x", "y", source=cds, line_width=2, line_color=line_color)
+    pane = pn.pane.Bokeh(fig, sizing_mode="stretch_width")
+    return fig, cds, pane
 
 
 class SkyViewer(param.Parameterized):
@@ -177,30 +201,28 @@ class SkyViewer(param.Parameterized):
         l_idx, m_idx = self._cube.nearest_lm_idx(l_val, m_val)
 
         def _apply_click_plots() -> None:
-            import holoviews as hv
+            import numpy as np
             from panel.io.notebook import push_notebook
 
-            # Plain hex — HV default Color can be a Param Value that Bokeh 3 rejects.
             spec = self._cube.spectrum(l_idx, m_idx, self.time_idx)
-            self._spectrum_pane.object = hv.Curve(
-                (self._cube.freq_mhz, spec),
-                kdims=["Frequency (MHz)"],
-                vdims=["Intensity (Jy/beam)"],
-            ).opts(title=f"Spectrum at l={l_val:.3f}, m={m_val:.3f}", **_HV_LINKED_CURVE_OPTS)
+            self._spectrum_cds.data = {
+                "x": np.asarray(self._cube.freq_mhz, dtype=float),
+                "y": np.asarray(spec, dtype=float),
+            }
+            self._spectrum_fig.title.text = f"Spectrum at l={l_val:.3f}, m={m_val:.3f}"
 
             lc = self._cube.light_curve(l_idx, m_idx, self.freq_idx)
-            self._lightcurve_pane.object = hv.Curve(
-                (self._cube.time_vals, lc),
-                kdims=["Time (MJD)"],
-                vdims=["Intensity (Jy/beam)"],
-            ).opts(
-                title=f"Light Curve at {self._cube.freq_mhz[self.freq_idx]:.1f} MHz",
-                **_HV_LINKED_CURVE_OPTS,
+            self._lightcurve_cds.data = {
+                "x": np.asarray(self._cube.time_vals, dtype=float),
+                "y": np.asarray(lc, dtype=float),
+            }
+            self._lightcurve_fig.title.text = (
+                f"Light Curve at {self._cube.freq_mhz[self.freq_idx]:.1f} MHz"
             )
 
             # Notebook / JupyterLab: updates triggered from ipywidgets comm do not
             # automatically flush Bokeh patches. Push the displayed layout root —
-            # nested HoloViews panes often have no comm in state._views by themselves.
+            # nested panes often have no comm in state._views by themselves.
             root = getattr(self, "_panel_root", None)
             if root is not None:
                 push_notebook(root)
@@ -222,11 +244,7 @@ class SkyViewer(param.Parameterized):
         -------
         pn.viewable.Viewable
         """
-        import holoviews as hv
         import panel as pn
-
-        if not hv.Store.renderers:
-            hv.extension("bokeh")
 
         # Sky widget pane
         sky_pane = pn.pane.IPyWidget(self._widget, sizing_mode="stretch_both")
@@ -247,18 +265,17 @@ class SkyViewer(param.Parameterized):
             width=250,
         )
 
-        # Linked view panes (updated on click)
-        self._spectrum_pane = pn.pane.HoloViews(
-            hv.Curve([], kdims=["Frequency (MHz)"], vdims=["Intensity (Jy/beam)"]).opts(
-                title="Click on image for spectrum", **_HV_LINKED_CURVE_OPTS
-            ),
-            sizing_mode="stretch_width",
+        # Linked strip charts: raw Bokeh so line_color stays a plain string (Bokeh 3 +
+        # HoloViews can otherwise pass Param Value into Line.line_color).
+        self._spectrum_fig, self._spectrum_cds, self._spectrum_pane = _linked_bokeh_line_pane(
+            "Click on image for spectrum",
+            "Frequency (MHz)",
+            "Intensity (Jy/beam)",
         )
-        self._lightcurve_pane = pn.pane.HoloViews(
-            hv.Curve([], kdims=["Time (MJD)"], vdims=["Intensity (Jy/beam)"]).opts(
-                title="Click on image for light curve", **_HV_LINKED_CURVE_OPTS
-            ),
-            sizing_mode="stretch_width",
+        self._lightcurve_fig, self._lightcurve_cds, self._lightcurve_pane = _linked_bokeh_line_pane(
+            "Click on image for light curve",
+            "Time (MJD)",
+            "Intensity (Jy/beam)",
         )
 
         linked_views = pn.Column(

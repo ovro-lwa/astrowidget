@@ -38,7 +38,7 @@ graph TD
 | `open_dataset` | `src/astrowidget/io.py` | Unified zarr loading (local, S3, in-memory) |
 | `get_wcs` | `src/astrowidget/wcs.py` | Extract WCS from zarr metadata (3 fallback locations) |
 | `PreloadedCube` | `src/astrowidget/cube.py` | LRU-cached slice loader with strided downsampling |
-| `SkyViewer` | `src/astrowidget/viewer.py` | Panel dashboard with controls and linked HoloViews |
+| `SkyViewer` | `src/astrowidget/viewer.py` | Panel dashboard with controls and linked Bokeh plots |
 | `inline_widget.js` | `js/inline_widget.js` | WebGL2 renderer, SIN projection shader, interaction |
 
 ## Data Flow

@@ -28,7 +28,7 @@ Existing tools like ipyaladin have significant limitations for radio astronomy w
 - **WCS coordinate grid** -- RA/Dec grid overlay with auto-scaling intervals
 - **HiPS backgrounds** -- Aladin Lite embed for DSS, WISE, Planck survey tiles
 - **Click-to-inspect** -- Click anywhere on the sphere to extract spectrum and light curve
-- **SkyViewer dashboard** -- Panel-based dashboard with controls and linked HoloViews plots
+- **SkyViewer dashboard** -- Panel-based dashboard with controls and linked Bokeh strip charts
 - **Box zoom** -- Drag a rectangle to zoom into a region of interest
 - **Tested** -- 63 Python + 15 JS tests with astropy-validated projection vectors
 
@@ -89,7 +89,7 @@ pip install astrowidget
 Optional extras:
 
 ```bash
-pip install 'astrowidget[dashboard]'  # Panel, HoloViews, Bokeh for SkyViewer
+pip install 'astrowidget[dashboard]'  # Panel + Bokeh for SkyViewer
 pip install 'astrowidget[remote]'     # S3/fsspec for remote zarr stores
 pip install 'astrowidget[ingest]'     # xradio for radio data ingestion
 pip install 'astrowidget[hips]'       # ipyaladin for SkyWidget.overlay / create_background
@@ -231,7 +231,7 @@ viewer.panel()  # returns a Panel layout
 | Projection | SIN (slant orthographic) |
 | Data format | zarr v2 via xarray + dask |
 | Coordinates | astropy WCS |
-| Dashboard | Panel + HoloViews + Bokeh |
+| Dashboard | Panel + Bokeh |
 | Build | Hatchling (Python) + Vite (JS) |
 | Environment | pixi (conda-forge) |
 | Testing | pytest + vitest |

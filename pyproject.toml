@@ -38,7 +38,6 @@ hips = [
 ]
 dashboard = [
     "panel>=1.3,<2",
-    "holoviews>=1.18,<2",
     "bokeh>=3.3,<4",
     "param>=2.0",
 ]
@@ -86,7 +85,6 @@ ruff = "*"
 jupyterlab = ">=4.0"
 param = ">=2.0"
 panel = ">=1.3"
-holoviews = ">=1.18"
 bokeh = ">=3.3"
 mkdocs = ">=1.6"
 mkdocs-material = ">=9.5"
