@@ -104,9 +104,6 @@ class SkyViewer(param.Parameterized):
         )
         # set_dataset() already navigates to phase center with fitted FOV
 
-        # Wire click event for linked views
-        self._widget.observe(self._on_click, names=["clicked_lm"])
-
     @classmethod
     def from_zarr(
         cls,
@@ -176,23 +173,32 @@ class SkyViewer(param.Parameterized):
         l_val, m_val = change["new"]
         l_idx, m_idx = self._cube.nearest_lm_idx(l_val, m_val)
 
-        import holoviews as hv
+        def _apply_click_plots() -> None:
+            import holoviews as hv
 
-        # Update spectrum
-        spec = self._cube.spectrum(l_idx, m_idx, self.time_idx)
-        self._spectrum_pane.object = hv.Curve(
-            (self._cube.freq_mhz, spec),
-            kdims=["Frequency (MHz)"],
-            vdims=["Intensity (Jy/beam)"],
-        ).opts(title=f"Spectrum at l={l_val:.3f}, m={m_val:.3f}", responsive=True, height=250)
+            spec = self._cube.spectrum(l_idx, m_idx, self.time_idx)
+            self._spectrum_pane.object = hv.Curve(
+                (self._cube.freq_mhz, spec),
+                kdims=["Frequency (MHz)"],
+                vdims=["Intensity (Jy/beam)"],
+            ).opts(title=f"Spectrum at l={l_val:.3f}, m={m_val:.3f}", responsive=True, height=250)
 
-        # Update light curve
-        lc = self._cube.light_curve(l_idx, m_idx, self.freq_idx)
-        self._lightcurve_pane.object = hv.Curve(
-            (self._cube.time_vals, lc),
-            kdims=["Time (MJD)"],
-            vdims=["Intensity (Jy/beam)"],
-        ).opts(title=f"Light Curve at {self._cube.freq_mhz[self.freq_idx]:.1f} MHz", responsive=True, height=250)
+            lc = self._cube.light_curve(l_idx, m_idx, self.freq_idx)
+            self._lightcurve_pane.object = hv.Curve(
+                (self._cube.time_vals, lc),
+                kdims=["Time (MJD)"],
+                vdims=["Intensity (Jy/beam)"],
+            ).opts(
+                title=f"Light Curve at {self._cube.freq_mhz[self.freq_idx]:.1f} MHz",
+                responsive=True,
+                height=250,
+            )
+
+        # ipywidgets comm can arrive while the Bokeh doc is busy; defer so Panel
+        # HoloViews panes actually re-render (see panel.io.state.state.execute).
+        import panel as pn
+
+        pn.state.execute(_apply_click_plots)
 
     def panel(self):
         """Create and return the Panel dashboard layout.
@@ -245,6 +251,10 @@ class SkyViewer(param.Parameterized):
             self._lightcurve_pane,
             min_width=350,
         )
+
+        if not getattr(self, "_skyviewer_click_observed", False):
+            self._widget.observe(self._on_click, names=["clicked_lm"])
+            self._skyviewer_click_observed = True
 
         return pn.Row(
             controls,

@@ -88,6 +88,26 @@ class TestSkyViewer:
         viewer.invert_horizontal_pan = False
         assert viewer._widget.invert_horizontal_pan is False
 
+    def test_clicked_lm_updates_linked_panes(self):
+        import holoviews as hv
+
+        hv.extension("bokeh")
+
+        from astrowidget.viewer import SkyViewer
+
+        ds = _make_dataset()
+        viewer = SkyViewer(ds)
+        viewer.panel()
+
+        assert len(viewer._spectrum_pane.object.dimension_values(1)) == 0
+
+        l0 = float(ds.coords["l"].values[3])
+        m0 = float(ds.coords["m"].values[4])
+        viewer._widget.clicked_lm = (l0, m0)
+
+        assert len(viewer._spectrum_pane.object.dimension_values(1)) == ds.sizes["frequency"]
+        assert len(viewer._lightcurve_pane.object.dimension_values(1)) == ds.sizes["time"]
+
     def test_from_zarr(self, tmp_path):
         from astrowidget.viewer import SkyViewer
         zarr_path = tmp_path / "test.zarr"
