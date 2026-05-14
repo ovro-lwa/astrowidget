@@ -194,11 +194,12 @@ class SkyViewer(param.Parameterized):
                 height=250,
             )
 
-        # ipywidgets comm can arrive while the Bokeh doc is busy; defer so Panel
-        # HoloViews panes actually re-render (see panel.io.state.state.execute).
+        # ipywidgets comm can arrive while the Bokeh doc is locked; Panel's execute
+        # defers only when needed. schedule=True always defers under a session and can
+        # leave updates stuck in Lab; "auto" runs immediately when the doc is unblocked.
         import panel as pn
 
-        pn.state.execute(_apply_click_plots, schedule=True)
+        pn.state.execute(_apply_click_plots, schedule="auto")
 
     def panel(self):
         """Create and return the Panel dashboard layout.
