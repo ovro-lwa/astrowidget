@@ -175,6 +175,7 @@ class SkyViewer(param.Parameterized):
 
         def _apply_click_plots() -> None:
             import holoviews as hv
+            from panel.io.notebook import push_notebook
 
             spec = self._cube.spectrum(l_idx, m_idx, self.time_idx)
             self._spectrum_pane.object = hv.Curve(
@@ -194,9 +195,14 @@ class SkyViewer(param.Parameterized):
                 height=250,
             )
 
+            # Notebook / JupyterLab: updates triggered from ipywidgets comm do not
+            # automatically flush Bokeh patches; push so linked HoloViews panes redraw.
+            push_notebook(self._spectrum_pane, self._lightcurve_pane)
+
         # ipywidgets comm can arrive while the Bokeh doc is locked; Panel's execute
         # defers only when needed. schedule=True always defers under a session and can
         # leave updates stuck in Lab; "auto" runs immediately when the doc is unblocked.
+        # push_notebook (inside _apply_click_plots) flushes Bokeh state in Jupyter.
         import panel as pn
 
         pn.state.execute(_apply_click_plots, schedule="auto")
