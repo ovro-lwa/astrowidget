@@ -92,6 +92,7 @@ Optional extras:
 pip install 'astrowidget[dashboard]'  # Panel, HoloViews, Bokeh for SkyViewer
 pip install 'astrowidget[remote]'     # S3/fsspec for remote zarr stores
 pip install 'astrowidget[ingest]'     # xradio for radio data ingestion
+pip install 'astrowidget[hips]'       # ipyaladin for SkyWidget.overlay / create_background
 ```
 
 ### From source (development)

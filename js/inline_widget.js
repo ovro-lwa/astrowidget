@@ -234,7 +234,7 @@ export async function render({ model, el }) {
 
   if (initBg) {
     try {
-      const mod = await import("https://esm.sh/aladin-lite@3.7.3-beta");
+      const mod = await import("https://esm.sh/aladin-lite@3.8.2");
       AladinLib = mod.default;
       await AladinLib.init;
       log("Aladin Lite loaded");
@@ -524,7 +524,7 @@ export async function render({ model, el }) {
       } else if (survey && !aladin && !AladinLib) {
         // Need to load Aladin Lite for the first time
         try {
-          const mod = await import("https://esm.sh/aladin-lite@3.7.3-beta");
+          const mod = await import("https://esm.sh/aladin-lite@3.8.2");
           AladinLib = mod.default;
           await AladinLib.init;
           container.appendChild(aladinDiv);
@@ -663,7 +663,8 @@ export async function render({ model, el }) {
       const dy = (e.clientY-lastY)/canvas.clientHeight*viewFov;
       const aspect = canvas.width/canvas.height;
       const cosDec = Math.max(Math.cos(viewDec), 0.01);
-      viewRA -= dx*aspect/cosDec;
+      const panH = model.get("invert_horizontal_pan") === false ? 1 : -1;
+      viewRA -= panH * dx * aspect / cosDec;
       viewDec = Math.max(-Math.PI/2+0.001, Math.min(Math.PI/2-0.001, viewDec+dy));
       lastX = e.clientX; lastY = e.clientY;
       didDrag = true;

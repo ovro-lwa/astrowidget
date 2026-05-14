@@ -58,6 +58,8 @@ class TestSkyViewer:
         assert viewer.time_idx == 0
         assert viewer.freq_idx == 0
         assert viewer.cmap == "inferno"
+        assert viewer.invert_horizontal_pan is True
+        assert viewer._widget.invert_horizontal_pan is True
 
     def test_time_freq_bounds(self):
         from astrowidget.viewer import SkyViewer
@@ -82,6 +84,9 @@ class TestSkyViewer:
 
         viewer.show_grid = False
         assert viewer._widget.show_grid is False
+
+        viewer.invert_horizontal_pan = False
+        assert viewer._widget.invert_horizontal_pan is False
 
     def test_from_zarr(self, tmp_path):
         from astrowidget.viewer import SkyViewer

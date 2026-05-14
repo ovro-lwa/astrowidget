@@ -25,6 +25,7 @@ class TestSkyWidgetInit:
         from astrowidget import SkyWidget
         w = SkyWidget()
         assert w.view_fov == 180.0
+        assert w.invert_horizontal_pan is True
         assert w.colormap == "inferno"
         assert w.stretch == "linear"
         assert w.opacity == 1.0
@@ -108,8 +109,8 @@ class TestSetImage:
         wcs = _make_sin_wcs(crpix=50.0, naxis=100)
         w.set_image(data, wcs)
 
-        assert w.vmin == pytest.approx(np.percentile(data, 2), rel=1e-4)
-        assert w.vmax == pytest.approx(np.percentile(data, 98), rel=1e-4)
+        assert w.vmin == pytest.approx(np.percentile(data, 1), rel=1e-4)
+        assert w.vmax == pytest.approx(np.percentile(data, 99), rel=1e-4)
 
 
 class TestGoto:
@@ -152,7 +153,8 @@ class TestAutoScale:
 
         # vmin/vmax should be computed ignoring NaN
         finite = data[np.isfinite(data)]
-        assert w.vmin == pytest.approx(np.percentile(finite, 2), rel=1e-4)
+        assert w.vmin == pytest.approx(np.percentile(finite, 1), rel=1e-4)
+        assert w.vmax == pytest.approx(np.percentile(finite, 99), rel=1e-4)
 
     def test_auto_scale_custom_percentiles(self):
         from astrowidget import SkyWidget

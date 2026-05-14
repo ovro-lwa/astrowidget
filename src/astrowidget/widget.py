@@ -62,6 +62,8 @@ class SkyWidget(anywidget.AnyWidget):
     view_dec = traitlets.Float(0.0).tag(sync=True)  # current view center Dec in degrees
     view_fov = traitlets.Float(180.0).tag(sync=True) # field of view in degrees
 
+    invert_horizontal_pan = traitlets.Bool(True).tag(sync=True)  # map-style horizontal pan (default)
+
     # --- Display options ---
     colormap = traitlets.Unicode("inferno").tag(sync=True)
     stretch = traitlets.Unicode("linear").tag(sync=True)
@@ -314,15 +316,15 @@ class SkyWidget(anywidget.AnyWidget):
         )
         return aladin
 
-    def auto_scale(self, percentile_low: float = 2, percentile_high: float = 98) -> None:
+    def auto_scale(self, percentile_low: float = 1, percentile_high: float = 99) -> None:
         """Set vmin/vmax from data percentiles.
 
         Parameters
         ----------
         percentile_low : float
-            Lower percentile for vmin (default 2).
+            Lower percentile for vmin (default 1).
         percentile_high : float
-            Upper percentile for vmax (default 98).
+            Upper percentile for vmax (default 99).
         """
         if self._current_data is None:
             return

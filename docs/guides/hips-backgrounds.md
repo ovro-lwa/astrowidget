@@ -48,7 +48,7 @@ graph TD
     CV -->|syncAladin| AL
 ```
 
-1. Aladin Lite is loaded via `import("https://esm.sh/aladin-lite@3.7.3-beta")` inside the widget's `render()` function
+1. Aladin Lite is loaded via `import("https://esm.sh/aladin-lite@3.8.2")` inside the widget's `render()` function
 2. The Aladin div is positioned behind the WebGL canvas (z-index 0 vs 1)
 3. The WebGL canvas clears to transparent (`gl.clearColor(0,0,0,0)`) so the background shows through
 4. On every pan/zoom interaction, `syncAladin()` calls `aladin.gotoRaDec()` and `aladin.setFoV()` directly in JavaScript — zero Python round-trip

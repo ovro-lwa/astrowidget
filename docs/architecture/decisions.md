@@ -12,7 +12,7 @@ Record of key technical decisions made during development.
 
 - **Decision:** Set `_esm = _JS_PATH.read_text()` (inline string) instead of `_esm = Path(...)` (file reference)
 - **Why:** anywidget loads file-based ESM via blob URLs, which cannot resolve cross-origin `import()` calls to `esm.sh`. Inline ESM strings go through the same blob URL mechanism but with different behavior for external imports. This pattern is proven by ipyaladin's own widget.js.
-- **Result:** Aladin Lite loads successfully via `import("https://esm.sh/aladin-lite@3.7.3-beta")` inside the `render()` function. The JS file is read once at Python import time.
+- **Result:** Aladin Lite loads successfully via `import("https://esm.sh/aladin-lite@3.8.2")` inside the `render()` function. The JS file is read once at Python import time.
 
 ### 2026-04-06: uint8 textures instead of float32 (Accepted)
 

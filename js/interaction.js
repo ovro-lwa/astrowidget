@@ -55,7 +55,8 @@ export function setupInteraction(canvas, renderer, model, readoutEl) {
       const cosDec = Math.cos(viewDec);
       const decClamp = Math.max(cosDec, 0.01); // avoid division by zero near poles
       const aspect = canvas.clientWidth / canvas.clientHeight;
-      viewRA -= dx * aspect / decClamp;
+      const panH = model.get("invert_horizontal_pan") === false ? 1 : -1;
+      viewRA -= panH * dx * aspect / decClamp;
       viewDec += dy;
 
       // Clamp Dec to avoid pole singularity

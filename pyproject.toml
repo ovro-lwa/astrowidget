@@ -32,6 +32,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# HiPS / Aladin Lite sidecar (ipyaladin; GPL-3.0 — not installed by default).
+hips = [
+    "ipyaladin>=0.7.0",
+]
 dashboard = [
     "panel>=1.3,<2",
     "holoviews>=1.18,<2",

@@ -66,6 +66,10 @@ class SkyViewer(param.Parameterized):
         doc="Stretch function",
     )
     show_grid = param.Boolean(default=True, doc="Show RA/Dec grid overlay")
+    invert_horizontal_pan = param.Boolean(
+        default=True,
+        doc="Map-style horizontal pan (drag right moves view east); False = legacy direction",
+    )
     background_survey = param.Selector(
         default="",
         objects=["", "DSS", "2MASS", "WISE", "Planck", "SDSS", "Mellinger", "Fermi", "Haslam408"],
@@ -90,6 +94,7 @@ class SkyViewer(param.Parameterized):
 
         # Create widget
         self._widget = SkyWidget()
+        self._widget.invert_horizontal_pan = self.invert_horizontal_pan
         self._widget.set_dataset(ds, var=var, pol=pol, max_size=max_size)
 
         # Navigate to phase center
@@ -152,6 +157,10 @@ class SkyViewer(param.Parameterized):
     def _on_grid_change(self):
         self._widget.show_grid = self.show_grid
 
+    @param.depends("invert_horizontal_pan", watch=True)
+    def _on_invert_horizontal_pan_change(self):
+        self._widget.invert_horizontal_pan = self.invert_horizontal_pan
+
     @param.depends("background_survey", watch=True)
     def _on_bg_survey_change(self):
         self._widget.background_survey = self.background_survey
@@ -208,6 +217,9 @@ class SkyViewer(param.Parameterized):
             pn.widgets.Select.from_param(self.param.cmap, name="Colormap"),
             pn.widgets.Select.from_param(self.param.stretch, name="Stretch"),
             pn.widgets.Checkbox.from_param(self.param.show_grid, name="Grid"),
+            pn.widgets.Checkbox.from_param(
+                self.param.invert_horizontal_pan, name="Map-style H pan",
+            ),
             "---",
             pn.widgets.Select.from_param(self.param.background_survey, name="Background"),
             pn.widgets.FloatSlider.from_param(self.param.background_opacity, name="BG Opacity", step=0.05),
