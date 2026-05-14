@@ -85,7 +85,7 @@ def _time_coord_as_mjd_for_plot(time_vals: Any) -> Any:
     if amx < 1.0e7:
         return out
 
-    # Large numeric epoch — treat as Unix time (s / ms / ns) → MJD.
+    # astrowidget-time-axis-unix-epoch-to-mjd: large numeric epoch → Unix (s/ms/ns) → MJD.
     if amx > 1.0e15:
         unix_s = out / 1.0e9
     elif amx > 1.0e12:
