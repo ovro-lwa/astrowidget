@@ -37,7 +37,7 @@ def _linked_bokeh_line_pane(
     *,
     line_color: str = "#3182bd",
 ) -> tuple[Any, Any, Any]:
-    """Strip chart as Bokeh figure + CDS + Panel pane (avoids HoloViews / Param Value on line_color)."""
+    """Strip chart as Bokeh figure + CDS + Panel pane (plain string line_color for Bokeh 3)."""
     import panel as pn
     from bokeh.models import ColumnDataSource
     from bokeh.plotting import figure as bk_figure
@@ -85,7 +85,7 @@ def _time_coord_as_mjd_for_plot(time_vals: Any) -> Any:
     if amx < 1.0e7:
         return out
 
-    # astrowidget-time-axis-unix-epoch-to-mjd: large numeric epoch → Unix (s/ms/ns) → MJD.
+    # Large numeric epoch: treat as Unix s/ms/ns and convert to MJD.
     if amx > 1.0e15:
         unix_s = out / 1.0e9
     elif amx > 1.0e12:
@@ -144,14 +144,10 @@ class SkyViewer(param.Parameterized):
 
     def __init__(self, ds: xr.Dataset, var: str = "SKY", pol: int = 0, max_size: int = 512, **kwargs):
         super().__init__(**kwargs)
-        from astropy.coordinates import SkyCoord
-
         from astrowidget.cube import PreloadedCube
-        from astrowidget.wcs import get_wcs
         from astrowidget.widget import SkyWidget
 
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
-        self._wcs = get_wcs(ds, var=var)
 
         # Set time/freq bounds from data
         self.param.time_idx.bounds = (0, self._cube.n_times - 1)
@@ -161,13 +157,7 @@ class SkyViewer(param.Parameterized):
         self._widget = SkyWidget()
         self._widget.invert_horizontal_pan = self.invert_horizontal_pan
         self._widget.set_dataset(ds, var=var, pol=pol, max_size=max_size)
-
-        # Navigate to phase center
-        SkyCoord(
-            ra=self._wcs.wcs.crval[0], dec=self._wcs.wcs.crval[1],
-            unit="deg", frame="fk5",
-        )
-        # set_dataset() already navigates to phase center with fitted FOV
+        # set_dataset() navigates to phase center with fitted FOV.
 
     @classmethod
     def from_zarr(
@@ -267,10 +257,7 @@ class SkyViewer(param.Parameterized):
             else:
                 push_notebook(self._spectrum_pane, self._lightcurve_pane)
 
-        # ipywidgets comm can arrive while the Bokeh doc is locked; Panel's execute
-        # defers only when needed. schedule=True always defers under a session and can
-        # leave updates stuck in Lab; "auto" runs immediately when the doc is unblocked.
-        # push_notebook (inside _apply_click_plots) flushes Bokeh state in Jupyter.
+        # schedule="auto" avoids always-deferred execute under Lab; push_notebook flushes Bokeh.
         import panel as pn
 
         pn.state.execute(_apply_click_plots, schedule="auto")
@@ -303,8 +290,7 @@ class SkyViewer(param.Parameterized):
             width=250,
         )
 
-        # Linked strip charts: raw Bokeh so line_color stays a plain string (Bokeh 3 +
-        # HoloViews can otherwise pass Param Value into Line.line_color).
+        # Linked strip charts: raw Bokeh (plain string line_color; avoids Param-wrapped values).
         self._spectrum_fig, self._spectrum_cds, self._spectrum_pane = _linked_bokeh_line_pane(
             "Click on image for spectrum",
             "Frequency (MHz)",
