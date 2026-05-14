@@ -62,19 +62,37 @@ def _time_coord_as_mjd_for_plot(time_vals: Any) -> Any:
 
     ``astype(float)`` on ``datetime64`` yields nanoseconds since epoch (~1e18) while
     ``y`` is ~1e0, so the line is effectively invisible even though the data range updates.
+
+    Numeric times with magnitudes typical of **Unix seconds** (~1e9) or **milliseconds /
+    nanoseconds** are converted via ``astropy.time.Time``; values already in a plausible
+    MJD range (|x| < 1e7) are left as-is.
     """
     import numpy as np
+    from astropy.time import Time
 
     tv = np.asarray(time_vals)
     if tv.dtype == object:
-        from astropy.time import Time
-
         return np.asarray(Time(tv.tolist()).mjd, dtype=np.float64)
     if np.issubdtype(tv.dtype, np.datetime64):
-        from astropy.time import Time
-
         return np.asarray(Time(tv, format="datetime64").mjd, dtype=np.float64)
-    return tv.astype(np.float64, copy=False)
+
+    out = tv.astype(np.float64, copy=False)
+    finite = out[np.isfinite(out)]
+    if finite.size == 0:
+        return out
+    amx = float(np.nanmax(np.abs(finite)))
+    # Plausible MJD / day-number range (modern dates ~6e4; allow large safety margin).
+    if amx < 1.0e7:
+        return out
+
+    # Large numeric epoch — treat as Unix time (s / ms / ns) → MJD.
+    if amx > 1.0e15:
+        unix_s = out / 1.0e9
+    elif amx > 1.0e12:
+        unix_s = out / 1.0e3
+    else:
+        unix_s = out
+    return np.asarray(Time(unix_s, format="unix").mjd, dtype=np.float64)
 
 
 class SkyViewer(param.Parameterized):

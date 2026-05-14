@@ -137,6 +137,36 @@ class TestSkyViewer:
         assert np.nanmax(np.abs(x)) < 1e7  # not datetime64-as-float ns (~1e18)
         assert float(np.min(x)) > 60300.0  # ~MJD for 2024-06
 
+    def test_lightcurve_float_unix_seconds_converted_to_mjd(self):
+        from astrowidget.viewer import SkyViewer
+
+        n_t, n_f = 3, 4
+        data = np.random.randn(n_t, n_f, 1, 8, 8).astype(np.float32)
+        # Seconds since Unix epoch (order 1e9) — same invisibility bug as datetime64→float
+        t_unix = np.linspace(1_700_000_000.0, 1_700_000_000.0 + 7200.0, n_t, dtype=np.float64)
+        ds = xr.Dataset(
+            data_vars={"SKY": (["time", "frequency", "polarization", "l", "m"], data)},
+            coords={
+                "time": t_unix,
+                "frequency": np.linspace(40e6, 80e6, n_f),
+                "polarization": [0],
+                "l": np.linspace(-0.2, 0.2, 8),
+                "m": np.linspace(-0.2, 0.2, 8),
+            },
+            attrs={"fits_wcs_header": _make_wcs_header_str()},
+        )
+        viewer = SkyViewer(ds)
+        viewer.panel()
+        l0 = float(ds.coords["l"].values[2])
+        m0 = float(ds.coords["m"].values[3])
+        viewer._widget.clicked_lm = (l0, m0)
+        viewer._widget.click_tick = viewer._widget.click_tick + 1
+
+        x = np.asarray(viewer._lightcurve_cds.data["x"], dtype=float)
+        assert x.size == n_t
+        assert np.nanmax(np.abs(x)) < 1e7
+        assert float(np.min(x)) > 59000.0  # MJD for ~2023–2024 from unix 1.7e9
+
     def test_from_zarr(self, tmp_path):
         from astrowidget.viewer import SkyViewer
         zarr_path = tmp_path / "test.zarr"
