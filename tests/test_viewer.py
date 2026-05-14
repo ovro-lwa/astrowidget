@@ -106,6 +106,37 @@ class TestSkyViewer:
         assert len(viewer._spectrum_cds.data["x"]) == ds.sizes["frequency"]
         assert len(viewer._lightcurve_cds.data["x"]) == ds.sizes["time"]
 
+    def test_lightcurve_datetime64_time_plotted_as_mjd(self):
+        import pandas as pd
+
+        from astrowidget.viewer import SkyViewer
+
+        n_t, n_f = 3, 4
+        data = np.random.randn(n_t, n_f, 1, 8, 8).astype(np.float32)
+        times = pd.date_range("2024-06-01", periods=n_t, freq="h").to_numpy(dtype="datetime64[ns]")
+        ds = xr.Dataset(
+            data_vars={"SKY": (["time", "frequency", "polarization", "l", "m"], data)},
+            coords={
+                "time": times,
+                "frequency": np.linspace(40e6, 80e6, n_f),
+                "polarization": [0],
+                "l": np.linspace(-0.2, 0.2, 8),
+                "m": np.linspace(-0.2, 0.2, 8),
+            },
+            attrs={"fits_wcs_header": _make_wcs_header_str()},
+        )
+        viewer = SkyViewer(ds)
+        viewer.panel()
+        l0 = float(ds.coords["l"].values[2])
+        m0 = float(ds.coords["m"].values[3])
+        viewer._widget.clicked_lm = (l0, m0)
+        viewer._widget.click_tick = viewer._widget.click_tick + 1
+
+        x = np.asarray(viewer._lightcurve_cds.data["x"], dtype=float)
+        assert x.size == n_t
+        assert np.nanmax(np.abs(x)) < 1e7  # not datetime64-as-float ns (~1e18)
+        assert float(np.min(x)) > 60300.0  # ~MJD for 2024-06
+
     def test_from_zarr(self, tmp_path):
         from astrowidget.viewer import SkyViewer
         zarr_path = tmp_path / "test.zarr"

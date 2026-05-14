@@ -57,6 +57,26 @@ def _linked_bokeh_line_pane(
     return fig, cds, pane
 
 
+def _time_coord_as_mjd_for_plot(time_vals: Any) -> Any:
+    """Convert dataset time coordinates to plain float MJD for Bokeh axes.
+
+    ``astype(float)`` on ``datetime64`` yields nanoseconds since epoch (~1e18) while
+    ``y`` is ~1e0, so the line is effectively invisible even though the data range updates.
+    """
+    import numpy as np
+
+    tv = np.asarray(time_vals)
+    if tv.dtype == object:
+        from astropy.time import Time
+
+        return np.asarray(Time(tv.tolist()).mjd, dtype=np.float64)
+    if np.issubdtype(tv.dtype, np.datetime64):
+        from astropy.time import Time
+
+        return np.asarray(Time(tv, format="datetime64").mjd, dtype=np.float64)
+    return tv.astype(np.float64, copy=False)
+
+
 class SkyViewer(param.Parameterized):
     """Interactive sky viewer dashboard with linked spectrum/light curve panels.
 
@@ -213,7 +233,7 @@ class SkyViewer(param.Parameterized):
 
             lc = self._cube.light_curve(l_idx, m_idx, self.freq_idx)
             self._lightcurve_cds.data = {
-                "x": np.asarray(self._cube.time_vals, dtype=float),
+                "x": _time_coord_as_mjd_for_plot(self._cube.time_vals),
                 "y": np.asarray(lc, dtype=float),
             }
             self._lightcurve_fig.title.text = (
