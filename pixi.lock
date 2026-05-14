@@ -774,7 +774,7 @@ packages:
 - pypi: ./
   name: astrowidget
   version: 0.2.0
-  sha256: 47ad99094575b3b07bafc31cba058266436bc513c48b981faf568ec70ae198f1
+  sha256: 11f0cdfbe510da6085fe5e3b3b3508e428a597ba495ede8a5c4c5551947626e7
   requires_dist:
   - anywidget>=0.9
   - traitlets>=5.0
