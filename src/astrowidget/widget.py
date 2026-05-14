@@ -180,25 +180,17 @@ class SkyWidget(anywidget.AnyWidget):
             Maximum spatial dimension for display.
         """
         from astrowidget.cube import PreloadedCube
-        from astrowidget.wcs import get_wcs
+        from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
 
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
         wcs = get_wcs(ds, var=var)
 
-        # Adjust WCS for strided display resolution
-        wcs_display = wcs.deepcopy()
-        wcs_display.wcs.cdelt = [
-            wcs.wcs.cdelt[0] * self._cube.stride_l,
-            wcs.wcs.cdelt[1] * self._cube.stride_m,
-        ]
-        wcs_display.wcs.crpix = [
-            (wcs.wcs.crpix[0] - 0.5) / self._cube.stride_l + 0.5,
-            (wcs.wcs.crpix[1] - 0.5) / self._cube.stride_m + 0.5,
-        ]
-        self._display_wcs = wcs_display
+        self._display_wcs = adjust_wcs_for_array_stride(
+            wcs, self._cube.stride_l, self._cube.stride_m
+        )
 
         # Display initial slice
-        self.set_image(self._cube.image(0, 0), wcs_display)
+        self.set_image(self._cube.image(0, 0), self._display_wcs)
 
         # Navigate to phase center with FOV fitted to image extent
         import astropy.units as u

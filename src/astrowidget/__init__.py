@@ -8,10 +8,17 @@ __version__ = "0.2.0"
 
 from astrowidget.cube import PreloadedCube
 from astrowidget.io import DataSourceError, open_dataset
-from astrowidget.wcs import get_wcs
+from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
 from astrowidget.widget import SkyWidget
 
-__all__ = ["SkyWidget", "open_dataset", "PreloadedCube", "get_wcs", "DataSourceError"]
+__all__ = [
+    "SkyWidget",
+    "open_dataset",
+    "PreloadedCube",
+    "get_wcs",
+    "adjust_wcs_for_array_stride",
+    "DataSourceError",
+]
 
 # SkyViewer requires Panel — conditional import
 try:

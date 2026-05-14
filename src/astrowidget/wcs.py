@@ -11,9 +11,57 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
+    from astropy.wcs import WCS as AstropyWCS
     import xarray as xr
 
-__all__ = ["get_wcs"]
+__all__ = ["get_wcs", "adjust_wcs_for_array_stride"]
+
+
+def adjust_wcs_for_array_stride(
+    wcs: AstropyWCS,
+    stride_l: int,
+    stride_m: int,
+) -> AstropyWCS:
+    """Return a WCS describing ``data[::stride_l, ::stride_m]`` on the same sky grid.
+
+    ``PreloadedCube`` downsamples with leading-edge NumPy striding: coarse
+    0-based pixel ``(k_l, k_m)`` samples full-resolution 0-based
+    ``(k_l * stride_l, k_m * stride_m)``, i.e. FITS 1-based pixels
+    ``P = k * stride + 1`` along each axis.
+
+    For a separable linear axis mapping
+    ``world = CRVAL + (P - CRPIX) * CDELT`` (FITS 1-based ``P``), the coarse
+    grid with ``CDELT' = CDELT * stride`` must use
+    ``CRPIX' = (CRPIX + stride - 1) / stride`` so every coarse pixel matches
+    the world coordinate of the sampled full pixel.
+
+    Parameters
+    ----------
+    wcs : astropy.wcs.WCS
+        Full-resolution 2D celestial WCS (axis 1 ↔ first index ``l``,
+        axis 2 ↔ second index ``m`` in the unstored array).
+    stride_l, stride_m : int
+        Stride along each axis; values ``< 1`` are treated as ``1``.
+
+    Returns
+    -------
+    astropy.wcs.WCS
+        Deep copy with ``cdelt`` and ``crpix`` updated; other header fields
+        unchanged (``PC``/``CD`` matrices are not recomputed—diagonal ``cdelt``
+        scaling only matches pure CDELT-type headers).
+    """
+    sl = max(1, int(stride_l))
+    sm = max(1, int(stride_m))
+    out = wcs.deepcopy()
+    out.wcs.cdelt = [
+        wcs.wcs.cdelt[0] * sl,
+        wcs.wcs.cdelt[1] * sm,
+    ]
+    out.wcs.crpix = [
+        (wcs.wcs.crpix[0] + sl - 1.0) / sl,
+        (wcs.wcs.crpix[1] + sm - 1.0) / sm,
+    ]
+    return out
 
 
 def get_wcs(ds: xr.Dataset, var: str = "SKY"):
