@@ -93,12 +93,30 @@ class SkyWidget(anywidget.AnyWidget):
         self._wcs = None
         self._current_data = None
         self._cube = None
+        self._ds = None
+        self._var = "SKY"
         self._display_wcs = None
         self._aladin = None
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
+
+    def _update_display_wcs(self) -> None:
+        """Rebuild display WCS for the current time slice (strided to cube resolution)."""
+        from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
+
+        if self._ds is None or self._cube is None:
+            return
+        wcs = get_wcs(self._ds, var=self._var, time_idx=self.time_idx)
+        self._display_wcs = adjust_wcs_for_array_stride(
+            wcs, self._cube.stride_l, self._cube.stride_m
+        )
+
     def _on_slice_change(self, change) -> None:
         """Observer: update displayed image when time_idx or freq_idx changes."""
-        if self._cube is not None and self._display_wcs is not None:
+        if self._cube is None:
+            return
+        if change.get("name") == "time_idx":
+            self._update_display_wcs()
+        if self._display_wcs is not None:
             self.set_image(
                 self._cube.image(self.time_idx, self.freq_idx),
                 self._display_wcs,
@@ -184,22 +202,23 @@ class SkyWidget(anywidget.AnyWidget):
             Maximum spatial dimension for display.
         """
         from astrowidget.cube import PreloadedCube
-        from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
+        from astrowidget.wcs import get_wcs
 
+        self._ds = ds
+        self._var = var
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
-        wcs = get_wcs(ds, var=var)
-
-        self._display_wcs = adjust_wcs_for_array_stride(
-            wcs, self._cube.stride_l, self._cube.stride_m
-        )
+        self.time_idx = 0
+        self.freq_idx = 0
+        self._update_display_wcs()
 
         # Display initial slice
         self.set_image(self._cube.image(0, 0), self._display_wcs)
 
-        # Navigate to phase center with FOV fitted to image extent
+        # Navigate to phase center with FOV fitted to image extent (full-res WCS)
         import astropy.units as u
         from astropy.coordinates import SkyCoord
 
+        wcs = get_wcs(ds, var=var, time_idx=0)
         phase_center = SkyCoord(
             ra=wcs.wcs.crval[0], dec=wcs.wcs.crval[1],
             unit="deg", frame="fk5",
@@ -229,7 +248,8 @@ class SkyWidget(anywidget.AnyWidget):
         """
         if not hasattr(self, "_cube") or self._cube is None:
             raise RuntimeError("Call set_dataset() before update_slice()")
-        self.set_image(self._cube.image(time_idx, freq_idx), self._display_wcs)
+        self.time_idx = time_idx
+        self.freq_idx = freq_idx
 
     def overlay(self, survey: str = "DSS", height: int = 600):
         """Display this widget overlaid on HiPS survey tiles.

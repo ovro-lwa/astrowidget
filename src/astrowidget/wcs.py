@@ -17,6 +17,48 @@ if TYPE_CHECKING:
 __all__ = ["get_wcs", "adjust_wcs_for_array_stride"]
 
 
+def _decode_fits_wcs_header(val) -> str:
+    """Decode a FITS header string from scalar bytes, str, or numpy scalar."""
+    if isinstance(val, np.ndarray):
+        if val.ndim == 0:
+            val = val.item()
+        else:
+            raise ValueError(
+                f"Expected scalar WCS header value, got array with shape {val.shape}"
+            )
+    if isinstance(val, (bytes, bytearray)) or type(val).__name__ == "bytes_":
+        return val.decode("utf-8", errors="replace").rstrip("\x00")
+    return str(val).rstrip("\x00")
+
+
+def _wcs_header_str_from_variable(ds: xr.Dataset, time_idx: int) -> str | None:
+    """Read ``wcs_header_str`` (0-D or per-time 1-D) from the dataset."""
+    if "wcs_header_str" not in ds:
+        return None
+
+    wcs_var = ds["wcs_header_str"]
+    if wcs_var.ndim == 0:
+        val = wcs_var.values
+    elif wcs_var.ndim == 1:
+        if "time" in wcs_var.dims:
+            val = wcs_var.isel(time=time_idx).values
+        else:
+            n_time = ds.sizes.get("time")
+            if n_time is not None and wcs_var.sizes[wcs_var.dims[0]] != n_time:
+                raise ValueError(
+                    "wcs_header_str is 1-D but its length does not match "
+                    f"ds.sizes['time'] ({n_time})"
+                )
+            val = np.asarray(wcs_var.values)[time_idx]
+    else:
+        raise ValueError(
+            "wcs_header_str must be 0-D or 1-D with a time dimension, "
+            f"got shape {tuple(wcs_var.shape)}"
+        )
+
+    return _decode_fits_wcs_header(val)
+
+
 def adjust_wcs_for_array_stride(
     wcs: AstropyWCS,
     stride_l: int,
@@ -64,13 +106,14 @@ def adjust_wcs_for_array_stride(
     return out
 
 
-def get_wcs(ds: xr.Dataset, var: str = "SKY"):
+def get_wcs(ds: xr.Dataset, var: str = "SKY", time_idx: int = 0):
     """Extract WCS from zarr dataset metadata.
 
     Searches for the WCS header string in three locations (in order):
     1. Variable attrs: ``ds[var].attrs["fits_wcs_header"]``
     2. Dataset attrs: ``ds.attrs["fits_wcs_header"]``
-    3. 0-D variable: ``ds["wcs_header_str"]``
+    3. Variable: ``ds["wcs_header_str"]`` — 0-D scalar or 1-D per-time
+       (e.g. ``wcs_header_str (time) |S2880`` from incremental ovro-lwa-portal zarr)
 
     Parameters
     ----------
@@ -78,6 +121,8 @@ def get_wcs(ds: xr.Dataset, var: str = "SKY"):
         Dataset with stored WCS metadata.
     var : str, default "SKY"
         Data variable to check attrs on first.
+    time_idx : int, default 0
+        Time index when ``wcs_header_str`` is stored per time step.
 
     Returns
     -------
@@ -102,15 +147,9 @@ def get_wcs(ds: xr.Dataset, var: str = "SKY"):
     if not hdr_str:
         hdr_str = ds.attrs.get("fits_wcs_header")
 
-    # 3. Check wcs_header_str variable
-    if not hdr_str and "wcs_header_str" in ds:
-        val = ds["wcs_header_str"].values
-        if isinstance(val, np.ndarray):
-            val = val.item()
-        if isinstance(val, (bytes, bytearray)) or type(val).__name__ == "bytes_":
-            hdr_str = val.decode("utf-8", errors="replace")
-        else:
-            hdr_str = str(val)
+    # 3. Check wcs_header_str variable (0-D or per-time 1-D)
+    if not hdr_str:
+        hdr_str = _wcs_header_str_from_variable(ds, time_idx)
 
     if not hdr_str:
         raise ValueError(
