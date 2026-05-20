@@ -88,6 +88,24 @@ class TestSliceTraitlets:
         w.time_idx = 5
         w.freq_idx = 3
 
+    def test_update_slice_loads_once(self):
+        from unittest.mock import patch
+
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        ds = _make_dataset()
+        w.set_dataset(ds)
+
+        with patch.object(w._cube, "image", wraps=w._cube.image) as mock_image:
+            with patch.object(w, "set_image", wraps=w.set_image) as mock_set_image:
+                w.update_slice(2, 3)
+        assert mock_image.call_count == 1
+        mock_image.assert_called_once_with(2, 3)
+        assert mock_set_image.call_count == 1
+        assert w.time_idx == 2
+        assert w.freq_idx == 3
+
 
 class TestDisplayOptions:
     def test_colormap_options(self):

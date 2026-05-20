@@ -97,6 +97,7 @@ class SkyWidget(anywidget.AnyWidget):
         self._var = "SKY"
         self._display_wcs = None
         self._aladin = None
+        self._suppress_slice_observer = False
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
 
     def _update_display_wcs(self) -> None:
@@ -110,17 +111,24 @@ class SkyWidget(anywidget.AnyWidget):
             wcs, self._cube.stride_l, self._cube.stride_m
         )
 
-    def _on_slice_change(self, change) -> None:
-        """Observer: update displayed image when time_idx or freq_idx changes."""
+    def _refresh_slice(self, *, update_wcs: bool = False) -> None:
+        """Load the current slice once and push a single image update to JS."""
         if self._cube is None:
             return
-        if change.get("name") == "time_idx":
+        if update_wcs:
             self._update_display_wcs()
-        if self._display_wcs is not None:
-            self.set_image(
-                self._cube.image(self.time_idx, self.freq_idx),
-                self._display_wcs,
-            )
+        if self._display_wcs is None:
+            return
+        self.set_image(
+            self._cube.image(self.time_idx, self.freq_idx),
+            self._display_wcs,
+        )
+
+    def _on_slice_change(self, change) -> None:
+        """Observer: update displayed image when time_idx or freq_idx changes."""
+        if self._suppress_slice_observer or self._cube is None:
+            return
+        self._refresh_slice(update_wcs=change.get("name") == "time_idx")
 
     def set_image(self, data: np.ndarray, wcs: WCS) -> None:
         """Send a 2D numpy array to the widget for display on the sphere.
@@ -154,18 +162,15 @@ class SkyWidget(anywidget.AnyWidget):
         self._wcs = wcs
         self._current_data = data
 
-        # Extract WCS parameters with full float64 precision
+        # Batch trait sync so the frontend redraws once per image update.
         cel = wcs.celestial
-        self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
-        self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
-        self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
-
-        # Send image as raw bytes — ~1MB for 512x512 float32
-        self.image_shape = tuple(int(x) for x in data.shape)
-        self.image_data = data.tobytes()
-
-        # Auto-scale color limits
-        self.auto_scale()
+        with self.hold_trait_notifications():
+            self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
+            self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
+            self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
+            self.image_shape = tuple(int(x) for x in data.shape)
+            self.image_data = data.tobytes()
+            self.auto_scale()
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
@@ -248,8 +253,15 @@ class SkyWidget(anywidget.AnyWidget):
         """
         if not hasattr(self, "_cube") or self._cube is None:
             raise RuntimeError("Call set_dataset() before update_slice()")
-        self.time_idx = time_idx
-        self.freq_idx = freq_idx
+        time_changed = time_idx != self.time_idx
+        self._suppress_slice_observer = True
+        try:
+            with self.hold_trait_notifications():
+                self.time_idx = time_idx
+                self.freq_idx = freq_idx
+            self._refresh_slice(update_wcs=time_changed)
+        finally:
+            self._suppress_slice_observer = False
 
     def overlay(self, survey: str = "DSS", height: int = 600):
         """Display this widget overlaid on HiPS survey tiles.
