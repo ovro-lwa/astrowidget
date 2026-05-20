@@ -220,12 +220,35 @@ class SkyViewer(param.Parameterized):
     def _on_bg_opacity_change(self):
         self._widget.background_opacity = self.background_opacity
 
+    def _display_indices_at_click(self) -> tuple[int, int]:
+        """Downsampled display pixel for the last sky click (RA/Dec)."""
+        ra_deg, dec_deg = (float(x) for x in self._widget.clicked_coord)
+        wcs = self._widget._display_wcs
+        if wcs is not None:
+            try:
+                return self._cube.display_indices_from_radec(ra_deg, dec_deg, wcs)
+            except ValueError:
+                pass
+        l_val, m_val = self._widget.clicked_lm
+        return self._cube.nearest_lm_idx(l_val, m_val)
+
+    def _format_radec_label(self, ra_deg: float, dec_deg: float) -> str:
+        from astropy.coordinates import Angle
+        import astropy.units as u
+
+        ra = Angle(ra_deg, unit=u.deg).to_string(unit=u.hourangle, precision=1, pad=True)
+        dec = Angle(dec_deg, unit=u.deg).to_string(
+            unit=u.deg, precision=1, alwayssign=True, pad=True
+        )
+        return f"RA={ra}, Dec={dec}"
+
     def _on_click(self, change):
         """Handle click events — update spectrum and light curve panels."""
         if not hasattr(self, "_spectrum_pane"):
             return
-        l_val, m_val = self._widget.clicked_lm
-        l_idx, m_idx = self._cube.nearest_lm_idx(l_val, m_val)
+        ra_deg, dec_deg = (float(x) for x in self._widget.clicked_coord)
+        l_idx, m_idx = self._display_indices_at_click()
+        coord_label = self._format_radec_label(ra_deg, dec_deg)
 
         def _apply_click_plots() -> None:
             import numpy as np
@@ -236,7 +259,7 @@ class SkyViewer(param.Parameterized):
                 "x": np.asarray(self._cube.freq_mhz, dtype=float),
                 "y": np.asarray(spec, dtype=float),
             }
-            self._spectrum_fig.title.text = f"Spectrum at l={l_val:.3f}, m={m_val:.3f}"
+            self._spectrum_fig.title.text = f"Spectrum at {coord_label}"
 
             lc = self._cube.light_curve(l_idx, m_idx, self.freq_idx)
             self._lightcurve_cds.data = {
@@ -244,7 +267,8 @@ class SkyViewer(param.Parameterized):
                 "y": np.asarray(lc, dtype=float),
             }
             self._lightcurve_fig.title.text = (
-                f"Light Curve at {self._cube.freq_mhz[self.freq_idx]:.1f} MHz"
+                f"Light curve at {coord_label}, "
+                f"{self._cube.freq_mhz[self.freq_idx]:.1f} MHz"
             )
 
             # Notebook / JupyterLab: updates triggered from ipywidgets comm do not
@@ -308,10 +332,9 @@ class SkyViewer(param.Parameterized):
         )
 
         if not getattr(self, "_skyviewer_click_observed", False):
-            # click_tick: notifies every click even when (l, m) is unchanged.
-            # clicked_lm: still notifies on most real clicks; covers cases where
-            # click_tick is not observed or comm order differs (e.g. some Lab setups).
-            self._widget.observe(self._on_click, names=["click_tick", "clicked_lm"])
+            # click_tick: notifies every click even when coordinates are unchanged.
+            # clicked_coord: RA/Dec (deg) from the canvas click (primary for linked plots).
+            self._widget.observe(self._on_click, names=["click_tick", "clicked_coord"])
             self._skyviewer_click_observed = True
 
         self._panel_root = pn.Row(

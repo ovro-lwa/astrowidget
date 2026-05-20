@@ -17,6 +17,18 @@ def _make_wcs_header_str():
     return w.to_header().tostring(sep="\n")
 
 
+def _radec_at_lm(ds: xr.Dataset, l_val: float, m_val: float) -> tuple[float, float]:
+    """Celestial coordinates at the nearest full-res (l, m) grid point."""
+    from astropy.io.fits import Header
+
+    hdr = ds.attrs["fits_wcs_header"]
+    w = WCS(Header.fromstring(hdr, sep="\n"))
+    l_idx = int(np.argmin(np.abs(ds.coords["l"].values - l_val)))
+    m_idx = int(np.argmin(np.abs(ds.coords["m"].values - m_val)))
+    ra, dec = w.all_pix2world(l_idx, m_idx, 0)
+    return float(ra), float(dec)
+
+
 def _make_dataset(n_t=3, n_f=4):
     data = np.random.randn(n_t, n_f, 1, 16, 16).astype(np.float32)
     return xr.Dataset(
@@ -102,7 +114,7 @@ class TestSkyViewer:
         viewer.invert_horizontal_pan = False
         assert viewer._widget.invert_horizontal_pan is False
 
-    def test_clicked_lm_updates_linked_panes(self):
+    def test_clicked_coord_updates_linked_panes(self):
         from astrowidget.viewer import SkyViewer
 
         ds = _make_dataset()
@@ -114,11 +126,13 @@ class TestSkyViewer:
 
         l0 = float(ds.coords["l"].values[3])
         m0 = float(ds.coords["m"].values[4])
-        viewer._widget.clicked_lm = (l0, m0)
+        viewer._widget.clicked_coord = _radec_at_lm(ds, l0, m0)
         viewer._widget.click_tick = viewer._widget.click_tick + 1
 
         assert len(viewer._spectrum_cds.data["x"]) == ds.sizes["frequency"]
         assert len(viewer._lightcurve_cds.data["x"]) == ds.sizes["time"]
+        assert "RA=" in viewer._spectrum_fig.title.text
+        assert "Dec=" in viewer._spectrum_fig.title.text
 
     def test_lightcurve_datetime64_time_plotted_as_mjd(self):
         import pandas as pd
@@ -143,7 +157,7 @@ class TestSkyViewer:
         viewer.panel()
         l0 = float(ds.coords["l"].values[2])
         m0 = float(ds.coords["m"].values[3])
-        viewer._widget.clicked_lm = (l0, m0)
+        viewer._widget.clicked_coord = _radec_at_lm(ds, l0, m0)
         viewer._widget.click_tick = viewer._widget.click_tick + 1
 
         x = np.asarray(viewer._lightcurve_cds.data["x"], dtype=float)
@@ -173,7 +187,7 @@ class TestSkyViewer:
         viewer.panel()
         l0 = float(ds.coords["l"].values[2])
         m0 = float(ds.coords["m"].values[3])
-        viewer._widget.clicked_lm = (l0, m0)
+        viewer._widget.clicked_coord = _radec_at_lm(ds, l0, m0)
         viewer._widget.click_tick = viewer._widget.click_tick + 1
 
         x = np.asarray(viewer._lightcurve_cds.data["x"], dtype=float)

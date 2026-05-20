@@ -108,6 +108,25 @@ class PreloadedCube:
         m_idx = int(np.argmin(np.abs(self.m_vals - m)))
         return l_idx, m_idx
 
+    def display_indices_from_radec(
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        wcs: object,
+    ) -> tuple[int, int]:
+        """Map celestial coordinates to downsampled ``(l_idx, m_idx)`` display pixels.
+
+        Uses the display WCS (strided to match :meth:`image`). Falls back to the
+        nearest ``l``/``m`` coordinate arrays when the position is off the image.
+        """
+        xp, yp = wcs.all_world2pix(float(ra_deg), float(dec_deg), 0)  # type: ignore[union-attr]
+        if not (np.isfinite(xp) and np.isfinite(yp)):
+            msg = "RA/Dec is outside the image footprint"
+            raise ValueError(msg)
+        l_idx = int(np.clip(np.round(xp), 0, len(self.l_vals) - 1))
+        m_idx = int(np.clip(np.round(yp), 0, len(self.m_vals) - 1))
+        return l_idx, m_idx
+
     @property
     def bounds(self) -> tuple[float, float, float, float]:
         """Image bounds as (l_left, m_bottom, l_right, m_top)."""
