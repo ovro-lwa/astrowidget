@@ -157,4 +157,7 @@ def get_wcs(ds: xr.Dataset, var: str = "SKY", time_idx: int = 0):
             "attribute on variable/dataset or 'wcs_header_str' variable."
         )
 
-    return WCS(Header.fromstring(hdr_str, sep="\n"))
+    wcs = WCS(Header.fromstring(hdr_str, sep="\n"))
+    if not wcs.has_celestial:
+        raise ValueError("WCS header has no celestial axes (RA/Dec)")
+    return wcs.celestial

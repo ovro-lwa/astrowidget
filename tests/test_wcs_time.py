@@ -19,6 +19,17 @@ def _header_str_for_crval(ra: float, dec: float) -> str:
     return w.to_header().tostring(sep="\n")
 
 
+def _multi_axis_header_str(ra: float, dec: float) -> str:
+    """4-axis FITS header (RA, Dec, frequency, Stokes) as in radio cubes."""
+    w = WCS(naxis=4)
+    w.wcs.ctype = ["RA---SIN", "DEC--SIN", "FREQ", "STOKES"]
+    w.wcs.crval = [ra, dec, 50e6, 1.0]
+    w.wcs.cdelt = [-0.1, 0.1, 1e6, 1.0]
+    w.wcs.crpix = [8.5, 8.5, 1.0, 1.0]
+    w.wcs.cunit = ["deg", "deg", "Hz", ""]
+    return w.to_header().tostring(sep="\n")
+
+
 def _make_per_time_wcs_dataset(n_time: int = 3) -> xr.Dataset:
     """Dataset with wcs_header_str (time) |S2880 and no scalar fits_wcs_header."""
     crvals = [(180.0 + i, 45.0 + i) for i in range(n_time)]
@@ -95,3 +106,19 @@ class TestPerTimeWcsHeaderStr:
         _make_per_time_wcs_dataset(2).to_zarr(store, mode="w")
         ds = open_dataset(store)
         assert get_wcs(ds, time_idx=1).wcs.crval[0] == pytest.approx(181.0)
+
+    def test_get_wcs_reduces_multi_axis_to_celestial(self):
+        from astrowidget import get_wcs
+
+        hdr = _multi_axis_header_str(180.0, 45.0)
+        ds = _make_per_time_wcs_dataset(1).drop_vars("wcs_header_str")
+        ds.attrs["fits_wcs_header"] = hdr
+
+        wcs = get_wcs(ds)
+        assert wcs.naxis == 2
+        assert wcs.wcs.ctype[0] == "RA---SIN"
+        assert wcs.wcs.crval[0] == pytest.approx(180.0)
+        assert wcs.wcs.crval[1] == pytest.approx(45.0)
+        # Regression: 2-arg all_world2pix must work on returned WCS
+        xp, yp = wcs.all_world2pix(180.0, 45.0, 0)
+        assert np.isfinite(xp) and np.isfinite(yp)
