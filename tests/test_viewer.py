@@ -76,6 +76,20 @@ class TestSkyViewer:
         viewer.time_idx = 1
         assert viewer._widget.time_idx == 1
 
+    def test_slice_change_calls_update_slice_once(self, monkeypatch):
+        from astrowidget.viewer import SkyViewer
+
+        ds = _make_dataset()
+        viewer = SkyViewer(ds)
+        calls = []
+        monkeypatch.setattr(
+            viewer._widget,
+            "update_slice",
+            lambda t, f: calls.append((t, f)),
+        )
+        viewer.time_idx = 2
+        assert calls == [(2, viewer.freq_idx)]
+
         viewer.cmap = "viridis"
         assert viewer._widget.colormap == "viridis"
 

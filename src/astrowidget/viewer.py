@@ -194,8 +194,7 @@ class SkyViewer(param.Parameterized):
 
     @param.depends("time_idx", "freq_idx", watch=True)
     def _on_slice_change(self):
-        self._widget.time_idx = self.time_idx
-        self._widget.freq_idx = self.freq_idx
+        self._widget.update_slice(self.time_idx, self.freq_idx)
 
     @param.depends("cmap", watch=True)
     def _on_cmap_change(self):
