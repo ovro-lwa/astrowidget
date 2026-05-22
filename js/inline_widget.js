@@ -458,17 +458,20 @@ export async function render({ model, el }) {
       draw();
     }
 
-    // Register change handlers first
-    model.on("change:image_data", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
-    model.on("change:image_shape", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
-    model.on("change:crval", () => { syncWCS(); draw(); });
-    model.on("change:cdelt", () => { syncWCS(); draw(); });
-    model.on("change:crpix", () => { syncWCS(); draw(); });
+    // Register change handlers first. Image/WCS/scaling traits update local
+    // state only; the frontend redraws once per Python-side image_revision bump
+    // so binary image_data cannot be drawn with stale WCS.
+    model.on("change:image_data", () => { syncDisplay(); syncImage(); syncWCS(); });
+    model.on("change:image_shape", () => { syncImage(); });
+    model.on("change:crval", () => { syncWCS(); });
+    model.on("change:cdelt", () => { syncWCS(); });
+    model.on("change:crpix", () => { syncWCS(); });
+    model.on("change:vmin", () => { syncDisplay(); uploadImage(); });
+    model.on("change:vmax", () => { syncDisplay(); uploadImage(); });
+    model.on("change:image_revision", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
     model.on("change:view_ra", () => { syncView(); draw(); });
     model.on("change:view_dec", () => { syncView(); draw(); });
     model.on("change:view_fov", () => { syncView(); draw(); });
-    model.on("change:vmin", () => { syncDisplay(); uploadImage(); draw(); });
-    model.on("change:vmax", () => { syncDisplay(); uploadImage(); draw(); });
     model.on("change:opacity", () => { syncDisplay(); draw(); });
     model.on("change:stretch", () => { syncDisplay(); draw(); });
     model.on("change:show_grid", () => { syncDisplay(); draw(); });

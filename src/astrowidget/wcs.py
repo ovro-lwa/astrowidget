@@ -109,11 +109,13 @@ def adjust_wcs_for_array_stride(
 def get_wcs(ds: xr.Dataset, var: str = "SKY", time_idx: int = 0):
     """Extract WCS from zarr dataset metadata.
 
-    Searches for the WCS header string in three locations (in order):
-    1. Variable attrs: ``ds[var].attrs["fits_wcs_header"]``
-    2. Dataset attrs: ``ds.attrs["fits_wcs_header"]``
-    3. Variable: ``ds["wcs_header_str"]`` — 0-D scalar or 1-D per-time
-       (e.g. ``wcs_header_str (time) |S2880`` from incremental ovro-lwa-portal zarr)
+    Searches for the WCS header string in this order:
+
+    1. ``wcs_header_str`` with a ``time`` dimension (per-slice headers from
+       incremental ovro-lwa-portal Zarr)
+    2. Variable attrs: ``ds[var].attrs["fits_wcs_header"]``
+    3. Dataset attrs: ``ds.attrs["fits_wcs_header"]``
+    4. Scalar ``wcs_header_str`` (0-D)
 
     Parameters
     ----------
@@ -139,15 +141,19 @@ def get_wcs(ds: xr.Dataset, var: str = "SKY", time_idx: int = 0):
 
     hdr_str = None
 
-    # 1. Check variable attrs
-    if var in ds.data_vars:
-        hdr_str = ds[var].attrs.get("fits_wcs_header")
+    # 1. Per-time wcs_header_str (incremental Zarr) overrides static attrs
+    if "wcs_header_str" in ds:
+        wcs_var = ds["wcs_header_str"]
+        if wcs_var.ndim == 1 and "time" in wcs_var.dims and wcs_var.sizes["time"] > 0:
+            hdr_str = _wcs_header_str_from_variable(ds, time_idx)
 
-    # 2. Check dataset attrs
+    # 2. Static attrs fallback
+    if not hdr_str and var in ds.data_vars:
+        hdr_str = ds[var].attrs.get("fits_wcs_header")
     if not hdr_str:
         hdr_str = ds.attrs.get("fits_wcs_header")
 
-    # 3. Check wcs_header_str variable (0-D or per-time 1-D)
+    # 3. Scalar wcs_header_str
     if not hdr_str:
         hdr_str = _wcs_header_str_from_variable(ds, time_idx)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import xarray as xr
 from astropy.wcs import WCS
 
@@ -96,15 +97,47 @@ class TestSliceTraitlets:
         w = SkyWidget()
         ds = _make_dataset()
         w.set_dataset(ds)
+        revision_after_load = w.image_revision
 
         with patch.object(w._cube, "image", wraps=w._cube.image) as mock_image:
-            with patch.object(w, "set_image", wraps=w.set_image) as mock_set_image:
+            with patch.object(w, "_push_image_frame", wraps=w._push_image_frame) as mock_push:
                 w.update_slice(2, 3)
         assert mock_image.call_count == 1
         mock_image.assert_called_once_with(2, 3)
-        assert mock_set_image.call_count == 1
+        assert mock_push.call_count == 1
         assert w.time_idx == 2
         assert w.freq_idx == 3
+        assert w.image_revision == revision_after_load + 1
+
+    def test_update_slice_can_batch_view(self):
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        ds = _make_dataset()
+        w.set_dataset(ds)
+        target = SkyCoord(ra=180.0 * u.deg, dec=45.0 * u.deg, frame="fk5")
+        revision_before = w.image_revision
+
+        w.update_slice(1, 2, center=target, fov=8.0 * u.deg, percentile_low=2, percentile_high=98)
+
+        assert w.time_idx == 1
+        assert w.freq_idx == 2
+        assert w.view_ra == pytest.approx(180.0)
+        assert w.view_dec == pytest.approx(45.0)
+        assert w.view_fov == pytest.approx(8.0)
+        assert w.image_revision == revision_before + 1
+
+    def test_set_image_bumps_image_revision(self):
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        data = np.ones((8, 8), dtype=np.float32)
+        wcs = _make_sin_wcs()
+        w.set_image(data, wcs)
+        assert w.image_revision == 1
 
 
 class TestDisplayOptions:

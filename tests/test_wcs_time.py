@@ -64,6 +64,16 @@ class TestPerTimeWcsHeaderStr:
         assert w2.wcs.crval[0] == pytest.approx(182.0)
         assert w2.wcs.crval[1] == pytest.approx(47.0)
 
+    def test_get_wcs_prefers_per_time_header_over_static_attrs(self):
+        from astrowidget import get_wcs
+
+        ds = _make_per_time_wcs_dataset(2)
+        static = _header_str_for_crval(10.0, 20.0)
+        ds.attrs["fits_wcs_header"] = static
+        ds["SKY"].attrs["fits_wcs_header"] = static
+
+        assert get_wcs(ds, time_idx=1).wcs.crval[0] == pytest.approx(181.0)
+
     def test_get_wcs_0d_wcs_header_str_unchanged(self):
         from astrowidget import get_wcs
 

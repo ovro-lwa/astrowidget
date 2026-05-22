@@ -88,6 +88,10 @@ class SkyWidget(anywidget.AnyWidget):
     time_idx = traitlets.Int(0).tag(sync=True)
     freq_idx = traitlets.Int(0).tag(sync=True)
 
+    # Monotonic counter: JS redraws the image layer only when this changes so
+    # image_data and WCS traits stay aligned (binary comm can arrive out of order).
+    image_revision = traitlets.Int(0).tag(sync=True)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._wcs = None
@@ -119,10 +123,67 @@ class SkyWidget(anywidget.AnyWidget):
             self._update_display_wcs()
         if self._display_wcs is None:
             return
-        self.set_image(
+        self._push_image_frame(
             self._cube.image(self.time_idx, self.freq_idx),
             self._display_wcs,
         )
+
+    def _percentile_limits(
+        self,
+        data: np.ndarray,
+        percentile_low: float,
+        percentile_high: float,
+    ) -> tuple[float, float] | None:
+        finite = data[np.isfinite(data)]
+        if finite.size == 0:
+            return None
+        lo, hi = np.percentile(finite, [percentile_low, percentile_high])
+        return float(lo), float(hi)
+
+    def _push_image_frame(
+        self,
+        data: np.ndarray,
+        wcs: WCS,
+        *,
+        percentile_low: float = 1.0,
+        percentile_high: float = 99.0,
+        center: SkyCoord | None = None,
+        fov: u.Quantity | None = None,
+    ) -> None:
+        """Send image bytes, WCS, scaling, and optional view in one frontend draw."""
+        from astropy.wcs import WCS as AstropyWCS
+
+        import astropy.units as u
+
+        if not isinstance(wcs, AstropyWCS):
+            raise TypeError("wcs must be an astropy.wcs.WCS object")
+        if not wcs.has_celestial:
+            raise ValueError("wcs must have celestial axes (RA/Dec)")
+        if data.ndim != 2:
+            raise ValueError(f"data must be 2D, got {data.ndim}D")
+
+        if data.dtype != np.float32:
+            data = data.astype(np.float32)
+
+        self._wcs = wcs
+        self._current_data = data
+
+        limits = self._percentile_limits(data, percentile_low, percentile_high)
+        cel = wcs.celestial
+        with self.hold_trait_notifications():
+            self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
+            self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
+            self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
+            self.image_shape = tuple(int(x) for x in data.shape)
+            self.image_data = data.tobytes()
+            if limits is not None:
+                self.vmin, self.vmax = limits
+            if center is not None:
+                self.view_ra = float(center.icrs.ra.deg)
+                self.view_dec = float(center.icrs.dec.deg)
+            if fov is not None:
+                self.view_fov = float(fov.to(u.deg).value)
+            self.image_revision += 1
 
     def _on_slice_change(self, change) -> None:
         """Observer: update displayed image when time_idx or freq_idx changes."""
@@ -156,21 +217,7 @@ class SkyWidget(anywidget.AnyWidget):
         if data.ndim != 2:
             raise ValueError(f"data must be 2D, got {data.ndim}D")
 
-        if data.dtype != np.float32:
-            data = data.astype(np.float32)
-
-        self._wcs = wcs
-        self._current_data = data
-
-        # Batch trait sync so the frontend redraws once per image update.
-        cel = wcs.celestial
-        with self.hold_trait_notifications():
-            self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
-            self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
-            self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
-            self.image_shape = tuple(int(x) for x in data.shape)
-            self.image_data = data.tobytes()
-            self.auto_scale()
+        self._push_image_frame(data, wcs)
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
@@ -239,10 +286,24 @@ class SkyWidget(anywidget.AnyWidget):
         fov = min(extent_deg * 0.9, 180.0)
         self.goto(phase_center, fov=fov * u.deg)
 
-    def update_slice(self, time_idx: int, freq_idx: int) -> None:
+    def update_slice(
+        self,
+        time_idx: int,
+        freq_idx: int,
+        *,
+        center: SkyCoord | None = None,
+        fov: u.Quantity | None = None,
+        percentile_low: float | None = None,
+        percentile_high: float | None = None,
+    ) -> None:
         """Update the displayed image to a different time/frequency slice.
 
         Requires ``set_dataset()`` to have been called first.
+
+        Optional ``center`` and ``fov`` update the view in the same atomic
+        frontend redraw as the new slice (avoids a transient WCS/image mismatch).
+        ``percentile_low`` / ``percentile_high`` override the default display
+        scaling for this slice.
 
         Parameters
         ----------
@@ -250,16 +311,35 @@ class SkyWidget(anywidget.AnyWidget):
             Time index.
         freq_idx : int
             Frequency index.
+        center : SkyCoord, optional
+            Recenter the view on this target after loading the slice.
+        fov : Quantity, optional
+            Field of view for ``center`` (e.g. ``8 * u.deg``).
+        percentile_low, percentile_high : float, optional
+            Percentile limits for ``vmin``/``vmax`` on this slice.
         """
         if not hasattr(self, "_cube") or self._cube is None:
             raise RuntimeError("Call set_dataset() before update_slice()")
-        time_changed = time_idx != self.time_idx
+        time_changed = int(time_idx) != int(self.time_idx)
+        scale_low = 1.0 if percentile_low is None else float(percentile_low)
+        scale_high = 99.0 if percentile_high is None else float(percentile_high)
         self._suppress_slice_observer = True
         try:
             with self.hold_trait_notifications():
-                self.time_idx = time_idx
-                self.freq_idx = freq_idx
-            self._refresh_slice(update_wcs=time_changed)
+                self.time_idx = int(time_idx)
+                self.freq_idx = int(freq_idx)
+            if time_changed or self._display_wcs is None:
+                self._update_display_wcs()
+            if self._display_wcs is None:
+                return
+            self._push_image_frame(
+                self._cube.image(self.time_idx, self.freq_idx),
+                self._display_wcs,
+                percentile_low=scale_low,
+                percentile_high=scale_high,
+                center=center,
+                fov=fov,
+            )
         finally:
             self._suppress_slice_observer = False
 
@@ -350,7 +430,13 @@ class SkyWidget(anywidget.AnyWidget):
         )
         return aladin
 
-    def auto_scale(self, percentile_low: float = 1, percentile_high: float = 99) -> None:
+    def auto_scale(
+        self,
+        percentile_low: float = 1,
+        percentile_high: float = 99,
+        *,
+        bump_revision: bool = True,
+    ) -> None:
         """Set vmin/vmax from data percentiles.
 
         Parameters
@@ -359,11 +445,19 @@ class SkyWidget(anywidget.AnyWidget):
             Lower percentile for vmin (default 1).
         percentile_high : float
             Upper percentile for vmax (default 99).
+        bump_revision : bool, default True
+            When True, trigger one frontend redraw after updating scaling.
         """
         if self._current_data is None:
             return
-        finite = self._current_data[np.isfinite(self._current_data)]
-        if finite.size == 0:
+        limits = self._percentile_limits(
+            self._current_data,
+            percentile_low,
+            percentile_high,
+        )
+        if limits is None:
             return
-        self.vmin = float(np.percentile(finite, percentile_low))
-        self.vmax = float(np.percentile(finite, percentile_high))
+        with self.hold_trait_notifications():
+            self.vmin, self.vmax = limits
+            if bump_revision:
+                self.image_revision += 1
