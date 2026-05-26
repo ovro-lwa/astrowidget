@@ -49,7 +49,7 @@ Navigate the view to a celestial target.
 | `target` | `SkyCoord` | Target position |
 | `fov` | `Quantity` or `None` | Field of view (e.g., `30 * u.deg`) |
 
-### auto_scale(percentile_low=2, percentile_high=98)
+### auto_scale(percentile_low=1, percentile_high=99)
 
 Set vmin/vmax from data percentiles.
 
@@ -63,7 +63,9 @@ Display the widget overlaid on HiPS survey tiles using an ipywidgets GridBox.
 
 ### create_background(survey, fov=None)
 
-Create a standalone ipyaladin widget synced to this widget's view.
+Create a standalone [ipyaladin](https://cds-astro.github.io/ipyaladin/) `Aladin` widget synced to this widget's view.
+
+Install the optional dependency first: `pip install astrowidget[hips]` (pulls in `ipyaladin>=0.7.0`; PyPI latest is 0.7.0 as of this writing).
 
 ## Traitlets
 
@@ -86,6 +88,7 @@ All traitlets are synced bidirectionally with the JavaScript frontend.
 | `view_ra` | `Float` | `0.0` | View center RA in degrees |
 | `view_dec` | `Float` | `0.0` | View center Dec in degrees |
 | `view_fov` | `Float` | `180.0` | Field of view in degrees |
+| `invert_horizontal_pan` | `Bool` | `True` | If `True` (default), horizontal drag uses map-style east/west; set `False` for the legacy grab-the-sky direction |
 
 ### Display Options
 
@@ -111,6 +114,7 @@ All traitlets are synced bidirectionally with the JavaScript frontend.
 |---|---|---|---|
 | `clicked_coord` | `Tuple` | `(0, 0)` | Last click (RA, Dec) in degrees |
 | `clicked_lm` | `Tuple` | `(0, 0)` | Last click (l, m) direction cosines |
+| `click_tick` | `Int` | `0` | Increments on every canvas click (JS); use for observers when `clicked_lm` may repeat |
 
 ### Slice Indices
 

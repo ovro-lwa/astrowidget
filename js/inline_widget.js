@@ -234,7 +234,7 @@ export async function render({ model, el }) {
 
   if (initBg) {
     try {
-      const mod = await import("https://esm.sh/aladin-lite@3.7.3-beta");
+      const mod = await import("https://esm.sh/aladin-lite@3.8.2");
       AladinLib = mod.default;
       await AladinLib.init;
       log("Aladin Lite loaded");
@@ -458,17 +458,20 @@ export async function render({ model, el }) {
       draw();
     }
 
-    // Register change handlers first
-    model.on("change:image_data", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
-    model.on("change:image_shape", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
-    model.on("change:crval", () => { syncWCS(); draw(); });
-    model.on("change:cdelt", () => { syncWCS(); draw(); });
-    model.on("change:crpix", () => { syncWCS(); draw(); });
+    // Register change handlers first. Image/WCS/scaling traits update local
+    // state only; the frontend redraws once per Python-side image_revision bump
+    // so binary image_data cannot be drawn with stale WCS.
+    model.on("change:image_data", () => { syncDisplay(); syncImage(); syncWCS(); });
+    model.on("change:image_shape", () => { syncImage(); });
+    model.on("change:crval", () => { syncWCS(); });
+    model.on("change:cdelt", () => { syncWCS(); });
+    model.on("change:crpix", () => { syncWCS(); });
+    model.on("change:vmin", () => { syncDisplay(); uploadImage(); });
+    model.on("change:vmax", () => { syncDisplay(); uploadImage(); });
+    model.on("change:image_revision", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
     model.on("change:view_ra", () => { syncView(); draw(); });
     model.on("change:view_dec", () => { syncView(); draw(); });
     model.on("change:view_fov", () => { syncView(); draw(); });
-    model.on("change:vmin", () => { syncDisplay(); uploadImage(); draw(); });
-    model.on("change:vmax", () => { syncDisplay(); uploadImage(); draw(); });
     model.on("change:opacity", () => { syncDisplay(); draw(); });
     model.on("change:stretch", () => { syncDisplay(); draw(); });
     model.on("change:show_grid", () => { syncDisplay(); draw(); });
@@ -524,7 +527,7 @@ export async function render({ model, el }) {
       } else if (survey && !aladin && !AladinLib) {
         // Need to load Aladin Lite for the first time
         try {
-          const mod = await import("https://esm.sh/aladin-lite@3.7.3-beta");
+          const mod = await import("https://esm.sh/aladin-lite@3.8.2");
           AladinLib = mod.default;
           await AladinLib.init;
           container.appendChild(aladinDiv);
@@ -663,7 +666,8 @@ export async function render({ model, el }) {
       const dy = (e.clientY-lastY)/canvas.clientHeight*viewFov;
       const aspect = canvas.width/canvas.height;
       const cosDec = Math.max(Math.cos(viewDec), 0.01);
-      viewRA -= dx*aspect/cosDec;
+      const panH = model.get("invert_horizontal_pan") === false ? 1 : -1;
+      viewRA -= panH * dx * aspect / cosDec;
       viewDec = Math.max(-Math.PI/2+0.001, Math.min(Math.PI/2-0.001, viewDec+dy));
       lastX = e.clientX; lastY = e.clientY;
       didDrag = true;
@@ -731,6 +735,8 @@ export async function render({ model, el }) {
           const lVal = cdP * Math.sin(dra);
           const mVal = sdP * cd0P - cdP * sd0P * Math.cos(dra);
           model.set("clicked_lm", [lVal, mVal]);
+          const prevTick = model.get("click_tick");
+          model.set("click_tick", (prevTick == null ? 0 : prevTick) + 1);
           model.save_changes();
 
           // Set crosshair position

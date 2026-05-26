@@ -62,6 +62,8 @@ class SkyWidget(anywidget.AnyWidget):
     view_dec = traitlets.Float(0.0).tag(sync=True)  # current view center Dec in degrees
     view_fov = traitlets.Float(180.0).tag(sync=True) # field of view in degrees
 
+    invert_horizontal_pan = traitlets.Bool(True).tag(sync=True)  # map-style horizontal pan (default)
+
     # --- Display options ---
     colormap = traitlets.Unicode("inferno").tag(sync=True)
     stretch = traitlets.Unicode("linear").tag(sync=True)
@@ -79,26 +81,115 @@ class SkyWidget(anywidget.AnyWidget):
     # --- Click events (JS → Python) ---
     clicked_coord = traitlets.Tuple((0.0, 0.0)).tag(sync=True)  # (RA, Dec) in degrees
     clicked_lm = traitlets.Tuple((0.0, 0.0)).tag(sync=True)     # (l, m) direction cosines
+    # Monotonic counter so every canvas click notifies Python even if (l, m) is unchanged.
+    click_tick = traitlets.Int(0).tag(sync=True)
 
     # --- Slice indices (wired to PreloadedCube) ---
     time_idx = traitlets.Int(0).tag(sync=True)
     freq_idx = traitlets.Int(0).tag(sync=True)
+
+    # Monotonic counter: JS redraws the image layer only when this changes so
+    # image_data and WCS traits stay aligned (binary comm can arrive out of order).
+    image_revision = traitlets.Int(0).tag(sync=True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._wcs = None
         self._current_data = None
         self._cube = None
+        self._ds = None
+        self._var = "SKY"
         self._display_wcs = None
         self._aladin = None
+        self._suppress_slice_observer = False
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
+
+    def _update_display_wcs(self) -> None:
+        """Rebuild display WCS for the current time slice (strided to cube resolution)."""
+        from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
+
+        if self._ds is None or self._cube is None:
+            return
+        wcs = get_wcs(self._ds, var=self._var, time_idx=self.time_idx)
+        self._display_wcs = adjust_wcs_for_array_stride(
+            wcs, self._cube.stride_l, self._cube.stride_m
+        )
+
+    def _refresh_slice(self, *, update_wcs: bool = False) -> None:
+        """Load the current slice once and push a single image update to JS."""
+        if self._cube is None:
+            return
+        if update_wcs:
+            self._update_display_wcs()
+        if self._display_wcs is None:
+            return
+        self._push_image_frame(
+            self._cube.image(self.time_idx, self.freq_idx),
+            self._display_wcs,
+        )
+
+    def _percentile_limits(
+        self,
+        data: np.ndarray,
+        percentile_low: float,
+        percentile_high: float,
+    ) -> tuple[float, float] | None:
+        finite = data[np.isfinite(data)]
+        if finite.size == 0:
+            return None
+        lo, hi = np.percentile(finite, [percentile_low, percentile_high])
+        return float(lo), float(hi)
+
+    def _push_image_frame(
+        self,
+        data: np.ndarray,
+        wcs: WCS,
+        *,
+        percentile_low: float = 1.0,
+        percentile_high: float = 99.0,
+        center: SkyCoord | None = None,
+        fov: u.Quantity | None = None,
+    ) -> None:
+        """Send image bytes, WCS, scaling, and optional view in one frontend draw."""
+        from astropy.wcs import WCS as AstropyWCS
+
+        import astropy.units as u
+
+        if not isinstance(wcs, AstropyWCS):
+            raise TypeError("wcs must be an astropy.wcs.WCS object")
+        if not wcs.has_celestial:
+            raise ValueError("wcs must have celestial axes (RA/Dec)")
+        if data.ndim != 2:
+            raise ValueError(f"data must be 2D, got {data.ndim}D")
+
+        if data.dtype != np.float32:
+            data = data.astype(np.float32)
+
+        self._wcs = wcs
+        self._current_data = data
+
+        limits = self._percentile_limits(data, percentile_low, percentile_high)
+        cel = wcs.celestial
+        with self.hold_trait_notifications():
+            self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
+            self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
+            self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
+            self.image_shape = tuple(int(x) for x in data.shape)
+            self.image_data = data.tobytes()
+            if limits is not None:
+                self.vmin, self.vmax = limits
+            if center is not None:
+                self.view_ra = float(center.icrs.ra.deg)
+                self.view_dec = float(center.icrs.dec.deg)
+            if fov is not None:
+                self.view_fov = float(fov.to(u.deg).value)
+            self.image_revision += 1
+
     def _on_slice_change(self, change) -> None:
         """Observer: update displayed image when time_idx or freq_idx changes."""
-        if self._cube is not None and self._display_wcs is not None:
-            self.set_image(
-                self._cube.image(self.time_idx, self.freq_idx),
-                self._display_wcs,
-            )
+        if self._suppress_slice_observer or self._cube is None:
+            return
+        self._refresh_slice(update_wcs=change.get("name") == "time_idx")
 
     def set_image(self, data: np.ndarray, wcs: WCS) -> None:
         """Send a 2D numpy array to the widget for display on the sphere.
@@ -126,24 +217,7 @@ class SkyWidget(anywidget.AnyWidget):
         if data.ndim != 2:
             raise ValueError(f"data must be 2D, got {data.ndim}D")
 
-        if data.dtype != np.float32:
-            data = data.astype(np.float32)
-
-        self._wcs = wcs
-        self._current_data = data
-
-        # Extract WCS parameters with full float64 precision
-        cel = wcs.celestial
-        self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
-        self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
-        self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
-
-        # Send image as raw bytes — ~1MB for 512x512 float32
-        self.image_shape = tuple(int(x) for x in data.shape)
-        self.image_data = data.tobytes()
-
-        # Auto-scale color limits
-        self.auto_scale()
+        self._push_image_frame(data, wcs)
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
@@ -162,11 +236,19 @@ class SkyWidget(anywidget.AnyWidget):
         if fov is not None:
             self.view_fov = float(fov.to(u.deg).value)
 
-    def set_dataset(self, ds, var: str = "SKY", pol: int = 0, max_size: int = 512) -> None:
+    def set_dataset(
+        self,
+        ds,
+        var: str = "SKY",
+        pol: int = 0,
+        max_size: int = 512,
+        *,
+        defer_display: bool = False,
+    ) -> None:
         """Load a zarr-backed dataset for interactive exploration.
 
         Creates a PreloadedCube for cached slice access and displays
-        the initial slice.
+        the initial slice unless ``defer_display`` is True.
 
         Parameters
         ----------
@@ -178,32 +260,39 @@ class SkyWidget(anywidget.AnyWidget):
             Polarization index.
         max_size : int, default 512
             Maximum spatial dimension for display.
+        defer_display : bool, default False
+            When True, prepare the cube only; call :meth:`update_slice` to
+            push the first image (avoids a throwaway slice load and comm transfer).
         """
         from astrowidget.cube import PreloadedCube
         from astrowidget.wcs import get_wcs
 
+        self._ds = ds
+        self._var = var
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
-        wcs = get_wcs(ds, var=var)
 
-        # Adjust WCS for strided display resolution
-        wcs_display = wcs.deepcopy()
-        wcs_display.wcs.cdelt = [
-            wcs.wcs.cdelt[0] * self._cube.stride_l,
-            wcs.wcs.cdelt[1] * self._cube.stride_m,
-        ]
-        wcs_display.wcs.crpix = [
-            (wcs.wcs.crpix[0] - 0.5) / self._cube.stride_l + 0.5,
-            (wcs.wcs.crpix[1] - 0.5) / self._cube.stride_m + 0.5,
-        ]
-        self._display_wcs = wcs_display
+        if defer_display:
+            # Caller uses update_slice(); avoid trait updates that fire the slice observer.
+            self._display_wcs = None
+            return
+
+        self._suppress_slice_observer = True
+        try:
+            with self.hold_trait_notifications():
+                self.time_idx = 0
+                self.freq_idx = 0
+            self._update_display_wcs()
+        finally:
+            self._suppress_slice_observer = False
 
         # Display initial slice
-        self.set_image(self._cube.image(0, 0), wcs_display)
+        self.set_image(self._cube.image(0, 0), self._display_wcs)
 
-        # Navigate to phase center with FOV fitted to image extent
+        # Navigate to phase center with FOV fitted to image extent (full-res WCS)
         import astropy.units as u
         from astropy.coordinates import SkyCoord
 
+        wcs = get_wcs(ds, var=var, time_idx=0)
         phase_center = SkyCoord(
             ra=wcs.wcs.crval[0], dec=wcs.wcs.crval[1],
             unit="deg", frame="fk5",
@@ -219,10 +308,24 @@ class SkyWidget(anywidget.AnyWidget):
         fov = min(extent_deg * 0.9, 180.0)
         self.goto(phase_center, fov=fov * u.deg)
 
-    def update_slice(self, time_idx: int, freq_idx: int) -> None:
+    def update_slice(
+        self,
+        time_idx: int,
+        freq_idx: int,
+        *,
+        center: SkyCoord | None = None,
+        fov: u.Quantity | None = None,
+        percentile_low: float | None = None,
+        percentile_high: float | None = None,
+    ) -> None:
         """Update the displayed image to a different time/frequency slice.
 
         Requires ``set_dataset()`` to have been called first.
+
+        Optional ``center`` and ``fov`` update the view in the same atomic
+        frontend redraw as the new slice (avoids a transient WCS/image mismatch).
+        ``percentile_low`` / ``percentile_high`` override the default display
+        scaling for this slice.
 
         Parameters
         ----------
@@ -230,10 +333,41 @@ class SkyWidget(anywidget.AnyWidget):
             Time index.
         freq_idx : int
             Frequency index.
+        center : SkyCoord, optional
+            Recenter the view on this target after loading the slice.
+        fov : Quantity, optional
+            Field of view for ``center`` (e.g. ``8 * u.deg``).
+        percentile_low, percentile_high : float, optional
+            Percentile limits for ``vmin``/``vmax`` on this slice.
         """
         if not hasattr(self, "_cube") or self._cube is None:
             raise RuntimeError("Call set_dataset() before update_slice()")
-        self.set_image(self._cube.image(time_idx, freq_idx), self._display_wcs)
+        time_changed = int(time_idx) != int(self.time_idx)
+        scale_low = 1.0 if percentile_low is None else float(percentile_low)
+        scale_high = 99.0 if percentile_high is None else float(percentile_high)
+        self._suppress_slice_observer = True
+        try:
+            with self.hold_trait_notifications():
+                self.time_idx = int(time_idx)
+                self.freq_idx = int(freq_idx)
+            if time_changed or self._display_wcs is None:
+                self._update_display_wcs()
+            if self._display_wcs is None:
+                msg = (
+                    f"Could not build display WCS for time_idx={int(time_idx)}, "
+                    f"freq_idx={int(freq_idx)}"
+                )
+                raise RuntimeError(msg)
+            self._push_image_frame(
+                self._cube.image(self.time_idx, self.freq_idx),
+                self._display_wcs,
+                percentile_low=scale_low,
+                percentile_high=scale_high,
+                center=center,
+                fov=fov,
+            )
+        finally:
+            self._suppress_slice_observer = False
 
     def overlay(self, survey: str = "DSS", height: int = 600):
         """Display this widget overlaid on HiPS survey tiles.
@@ -322,20 +456,34 @@ class SkyWidget(anywidget.AnyWidget):
         )
         return aladin
 
-    def auto_scale(self, percentile_low: float = 2, percentile_high: float = 98) -> None:
+    def auto_scale(
+        self,
+        percentile_low: float = 1,
+        percentile_high: float = 99,
+        *,
+        bump_revision: bool = True,
+    ) -> None:
         """Set vmin/vmax from data percentiles.
 
         Parameters
         ----------
         percentile_low : float
-            Lower percentile for vmin (default 2).
+            Lower percentile for vmin (default 1).
         percentile_high : float
-            Upper percentile for vmax (default 98).
+            Upper percentile for vmax (default 99).
+        bump_revision : bool, default True
+            When True, trigger one frontend redraw after updating scaling.
         """
         if self._current_data is None:
             return
-        finite = self._current_data[np.isfinite(self._current_data)]
-        if finite.size == 0:
+        limits = self._percentile_limits(
+            self._current_data,
+            percentile_low,
+            percentile_high,
+        )
+        if limits is None:
             return
-        self.vmin = float(np.percentile(finite, percentile_low))
-        self.vmax = float(np.percentile(finite, percentile_high))
+        with self.hold_trait_notifications():
+            self.vmin, self.vmax = limits
+            if bump_revision:
+                self.image_revision += 1

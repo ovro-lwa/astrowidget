@@ -132,3 +132,24 @@ class TestPreloadedCube:
         cube = PreloadedCube(ds)
         assert cube.freq_mhz[0] == pytest.approx(40.0)
         assert cube.freq_mhz[-1] == pytest.approx(80.0)
+
+    def test_display_indices_from_radec_multi_axis_wcs(self):
+        from astropy.wcs import WCS
+
+        from astrowidget import PreloadedCube, get_wcs
+
+        w = WCS(naxis=4)
+        w.wcs.ctype = ["RA---SIN", "DEC--SIN", "FREQ", "STOKES"]
+        w.wcs.crval = [180.0, 45.0, 50e6, 1.0]
+        w.wcs.cdelt = [-0.1, 0.1, 1e6, 1.0]
+        w.wcs.crpix = [16.5, 16.5, 1.0, 1.0]
+        w.wcs.cunit = ["deg", "deg", "Hz", ""]
+
+        ds = _make_cube_dataset(n_l=32, n_m=32)
+        ds.attrs["fits_wcs_header"] = w.to_header().tostring(sep="\n")
+        cube = PreloadedCube(ds)
+        display_wcs = get_wcs(ds)
+
+        l_idx, m_idx = cube.display_indices_from_radec(180.0, 45.0, display_wcs)
+        assert 0 <= l_idx < len(cube.l_vals)
+        assert 0 <= m_idx < len(cube.m_vals)

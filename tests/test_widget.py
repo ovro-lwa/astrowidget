@@ -25,6 +25,7 @@ class TestSkyWidgetInit:
         from astrowidget import SkyWidget
         w = SkyWidget()
         assert w.view_fov == 180.0
+        assert w.invert_horizontal_pan is True
         assert w.colormap == "inferno"
         assert w.stretch == "linear"
         assert w.opacity == 1.0
@@ -108,8 +109,8 @@ class TestSetImage:
         wcs = _make_sin_wcs(crpix=50.0, naxis=100)
         w.set_image(data, wcs)
 
-        assert w.vmin == pytest.approx(np.percentile(data, 2), rel=1e-4)
-        assert w.vmax == pytest.approx(np.percentile(data, 98), rel=1e-4)
+        assert w.vmin == pytest.approx(np.percentile(data, 1), rel=1e-4)
+        assert w.vmax == pytest.approx(np.percentile(data, 99), rel=1e-4)
 
 
 class TestGoto:
@@ -152,7 +153,8 @@ class TestAutoScale:
 
         # vmin/vmax should be computed ignoring NaN
         finite = data[np.isfinite(data)]
-        assert w.vmin == pytest.approx(np.percentile(finite, 2), rel=1e-4)
+        assert w.vmin == pytest.approx(np.percentile(finite, 1), rel=1e-4)
+        assert w.vmax == pytest.approx(np.percentile(finite, 99), rel=1e-4)
 
     def test_auto_scale_custom_percentiles(self):
         from astrowidget import SkyWidget
@@ -164,3 +166,52 @@ class TestAutoScale:
 
         assert w.vmin == pytest.approx(np.percentile(data, 5), rel=1e-4)
         assert w.vmax == pytest.approx(np.percentile(data, 95), rel=1e-4)
+
+
+class TestSetDataset:
+    def test_defer_display_skips_initial_image(self):
+        import xarray as xr
+        from astrowidget import SkyWidget
+
+        data = np.zeros((2, 2, 1, 8, 8), dtype=np.float32)
+        ds = xr.Dataset(
+            {"SKY": (["time", "frequency", "polarization", "l", "m"], data)},
+            coords={
+                "time": [0, 1],
+                "frequency": [50e6, 60e6],
+                "polarization": [0],
+                "l": np.linspace(-0.5, 0.5, 8),
+                "m": np.linspace(-0.5, 0.5, 8),
+            },
+        )
+        w = SkyWidget()
+        w.set_dataset(ds, max_size=8, defer_display=True)
+
+        assert w.image_data == b""
+        assert w.image_shape == (0, 0)
+        assert w._cube is not None
+        assert w._display_wcs is None
+
+    def test_defer_display_does_not_trigger_slice_observer(self):
+        import xarray as xr
+        from astrowidget import SkyWidget
+
+        data = np.ones((2, 2, 1, 8, 8), dtype=np.float32)
+        ds = xr.Dataset(
+            {"SKY": (["time", "frequency", "polarization", "l", "m"], data)},
+            coords={
+                "time": [0, 1],
+                "frequency": [50e6, 60e6],
+                "polarization": [0],
+                "l": np.linspace(-0.5, 0.5, 8),
+                "m": np.linspace(-0.5, 0.5, 8),
+            },
+        )
+        w = SkyWidget()
+        w.time_idx = 1
+        w.freq_idx = 1
+        w.set_dataset(ds, max_size=8, defer_display=True)
+
+        assert w.time_idx == 1
+        assert w.freq_idx == 1
+        assert w.image_data == b""

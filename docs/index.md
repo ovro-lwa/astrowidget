@@ -35,7 +35,7 @@ widget
 - **Coordinate grid** — RA/Dec grid overlay with auto-scaling intervals
 - **HiPS backgrounds** — Aladin Lite embed for DSS, WISE, Planck survey tiles
 - **Click-to-inspect** — Click on the sphere to extract spectrum and light curve
-- **SkyViewer dashboard** — Panel wrapper with controls and linked HoloViews panels
+- **SkyViewer dashboard** — Panel wrapper with controls and linked Bokeh line plots
 - **Box zoom** — Drag a rectangle to zoom into a region
 - **63 tests** — pytest (Python) + vitest (JS) with astropy-validated projection vectors
 

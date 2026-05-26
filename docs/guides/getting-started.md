@@ -31,7 +31,7 @@ pip install astrowidget
 Optional extras:
 
 ```bash
-pip install 'astrowidget[dashboard]'  # Panel, HoloViews, Bokeh
+pip install 'astrowidget[dashboard]'  # Panel + Bokeh
 pip install 'astrowidget[remote]'     # S3, fsspec for remote zarr
 ```
 

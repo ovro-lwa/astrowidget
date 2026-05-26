@@ -32,9 +32,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# HiPS / Aladin Lite sidecar (ipyaladin; GPL-3.0 — not installed by default).
+hips = [
+    "ipyaladin>=0.7.0",
+]
 dashboard = [
     "panel>=1.3,<2",
-    "holoviews>=1.18,<2",
     "bokeh>=3.3,<4",
     "param>=2.0",
 ]
@@ -70,7 +73,7 @@ nodejs = ">=20"
 pip = "*"
 
 [tool.pixi.pypi-dependencies]
-astrowidget = { path = ".", editable = true }
+astrowidget = { path = "../astrowidget", editable = true }
 
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
@@ -82,7 +85,6 @@ ruff = "*"
 jupyterlab = ">=4.0"
 param = ">=2.0"
 panel = ">=1.3"
-holoviews = ">=1.18"
 bokeh = ">=3.3"
 mkdocs = ">=1.6"
 mkdocs-material = ">=9.5"
