@@ -236,11 +236,19 @@ class SkyWidget(anywidget.AnyWidget):
         if fov is not None:
             self.view_fov = float(fov.to(u.deg).value)
 
-    def set_dataset(self, ds, var: str = "SKY", pol: int = 0, max_size: int = 512) -> None:
+    def set_dataset(
+        self,
+        ds,
+        var: str = "SKY",
+        pol: int = 0,
+        max_size: int = 512,
+        *,
+        defer_display: bool = False,
+    ) -> None:
         """Load a zarr-backed dataset for interactive exploration.
 
         Creates a PreloadedCube for cached slice access and displays
-        the initial slice.
+        the initial slice unless ``defer_display`` is True.
 
         Parameters
         ----------
@@ -252,6 +260,9 @@ class SkyWidget(anywidget.AnyWidget):
             Polarization index.
         max_size : int, default 512
             Maximum spatial dimension for display.
+        defer_display : bool, default False
+            When True, prepare the cube only; call :meth:`update_slice` to
+            push the first image (avoids a throwaway slice load and comm transfer).
         """
         from astrowidget.cube import PreloadedCube
         from astrowidget.wcs import get_wcs
@@ -259,9 +270,20 @@ class SkyWidget(anywidget.AnyWidget):
         self._ds = ds
         self._var = var
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
-        self.time_idx = 0
-        self.freq_idx = 0
-        self._update_display_wcs()
+
+        if defer_display:
+            # Caller uses update_slice(); avoid trait updates that fire the slice observer.
+            self._display_wcs = None
+            return
+
+        self._suppress_slice_observer = True
+        try:
+            with self.hold_trait_notifications():
+                self.time_idx = 0
+                self.freq_idx = 0
+            self._update_display_wcs()
+        finally:
+            self._suppress_slice_observer = False
 
         # Display initial slice
         self.set_image(self._cube.image(0, 0), self._display_wcs)
@@ -331,7 +353,11 @@ class SkyWidget(anywidget.AnyWidget):
             if time_changed or self._display_wcs is None:
                 self._update_display_wcs()
             if self._display_wcs is None:
-                return
+                msg = (
+                    f"Could not build display WCS for time_idx={int(time_idx)}, "
+                    f"freq_idx={int(freq_idx)}"
+                )
+                raise RuntimeError(msg)
             self._push_image_frame(
                 self._cube.image(self.time_idx, self.freq_idx),
                 self._display_wcs,
