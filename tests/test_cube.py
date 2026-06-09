@@ -63,9 +63,12 @@ class TestPreloadedCube:
         ds = _make_cube_dataset(n_l=32, n_m=32)
         cube = PreloadedCube(ds)
         img = cube.image(0, 0)
-        # image() transposes (l,m) → (m,l) for display
+        # image() keeps (l, m) order to match the display WCS / shader layout
         assert img.shape == (32, 32)
         assert img.dtype == np.float32
+        # Synthetic data increases along l (axis 0); peak must be on axis 0, not 1
+        peak_l, peak_m = np.unravel_index(int(np.argmax(img)), img.shape)
+        assert peak_l >= peak_m
 
     def test_spectrum_shape(self):
         from astrowidget import PreloadedCube

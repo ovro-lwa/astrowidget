@@ -77,6 +77,9 @@ class SkyWidget(anywidget.AnyWidget):
     # --- HiPS background ---
     background_survey = traitlets.Unicode("").tag(sync=True)  # empty = no background
     background_opacity = traitlets.Float(1.0).tag(sync=True)
+    # NaN = leave Aladin Lite defaults; finite values call setCuts on the base layer.
+    background_cut_min = traitlets.Float(float("nan")).tag(sync=True)
+    background_cut_max = traitlets.Float(float("nan")).tag(sync=True)
 
     # --- Click events (JS → Python) ---
     clicked_coord = traitlets.Tuple((0.0, 0.0)).tag(sync=True)  # (RA, Dec) in degrees
@@ -164,6 +167,29 @@ class SkyWidget(anywidget.AnyWidget):
 
         if data.dtype != np.float32:
             data = data.astype(np.float32)
+
+        from astrowidget.wcs import (
+            reproject_for_shader_display,
+            wcs_projection_matches_naive_shader,
+        )
+
+        if center is not None:
+            view_ra = float(center.icrs.ra.deg)
+            view_dec = float(center.icrs.dec.deg)
+        else:
+            view_ra = float(wcs.wcs.crval[0])
+            view_dec = float(wcs.wcs.crval[1])
+
+        # Catalog / target views fix view_ra/dec on the sky; the slice WCS still
+        # carries zenith-tracking CRVAL. Always reproject so the WebGL grid
+        # matches the view center (naive-match alone is for zenith-only views).
+        if center is not None or not wcs_projection_matches_naive_shader(wcs):
+            data, wcs = reproject_for_shader_display(
+                data,
+                wcs,
+                crval_ra=view_ra,
+                crval_dec=view_dec,
+            )
 
         self._wcs = wcs
         self._current_data = data

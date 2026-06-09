@@ -117,6 +117,17 @@ class TestPerTimeWcsHeaderStr:
         ds = open_dataset(store)
         assert get_wcs(ds, time_idx=1).wcs.crval[0] == pytest.approx(181.0)
 
+    def test_get_wcs_no_static_fallback_when_per_time_empty(self):
+        from astrowidget import get_wcs
+
+        ds = _make_per_time_wcs_dataset(2)
+        static = _header_str_for_crval(10.0, 20.0)
+        ds.attrs["fits_wcs_header"] = static
+        ds["wcs_header_str"].values[1] = b""
+
+        with pytest.raises(ValueError, match="Missing WCS metadata"):
+            get_wcs(ds, time_idx=1)
+
     def test_get_wcs_reduces_multi_axis_to_celestial(self):
         from astrowidget import get_wcs
 

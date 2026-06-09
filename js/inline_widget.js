@@ -224,8 +224,89 @@ const SURVEY_PRESETS = {
   "Haslam408": "CDS/P/HI4PI/NHI",
 };
 
+// HiPS-only Aladin options — astrowidget owns pan/zoom/readout UI above the canvas.
+const ALADIN_BG_OPTIONS = {
+  projection: "SIN",
+  showCooGrid: false,
+  showFrame: false,
+  showCooGridControl: false,
+  showSimbadPointerControl: false,
+  showFullscreenControl: false,
+  showLayersControl: false,
+  showGotoControl: false,
+  showShareControl: false,
+  showSettingsControl: false,
+  showZoomControl: false,
+  showCooLocation: false,
+  showProjectionControl: false,
+  showFov: false,
+  showStatusBar: false,
+  showReticle: false,
+  showContextMenu: false,
+};
+
+// Pin any remaining Aladin chrome to z-index 0 (below WebGL canvas at z=1).
+const ALADIN_CONTROL_SELECTORS = [
+  ".aladin-projection-control",
+  ".aladin-location",
+  ".aladin-fov",
+  ".aladin-cooFrame",
+  ".aladin-status-bar",
+  ".aladin-fullScreen-control",
+  ".aladin-fullscreen",
+  ".aladin-zoomControl",
+  ".aladin-gotoControl",
+  ".aladin-layersControl",
+  ".aladin-widgets-toolbar",
+  ".aladin-logo-container",
+  ".aladin-table",
+].join(", ");
+
+function installAladinControlLayerStyles(container) {
+  const id = "astrowidget-aladin-control-layer";
+  if (container.querySelector(`#${id}`)) return;
+  const style = document.createElement("style");
+  style.id = id;
+  style.textContent = `
+    .astrowidget-aladin-bg ${ALADIN_CONTROL_SELECTORS} {
+      z-index: 0 !important;
+      pointer-events: none !important;
+    }
+  `;
+  container.appendChild(style);
+}
+
+function prepareAladinBackgroundDiv(aladinDiv, container) {
+  aladinDiv.classList.add("astrowidget-aladin-bg");
+  installAladinControlLayerStyles(container);
+}
+
 export async function render({ model, el }) {
   function log(s) { console.log("[astrowidget]", s); }
+
+  function applyBackgroundCuts() {
+    const lo = model.get("background_cut_min");
+    const hi = model.get("background_cut_max");
+    if (!aladin || !Number.isFinite(lo) || !Number.isFinite(hi)) return;
+    let attempts = 0;
+    function tryApply() {
+      attempts += 1;
+      try {
+        const layer = aladin.getBaseImageLayer?.();
+        if (layer?.setCuts) {
+          layer.setCuts(lo, hi);
+          log("Background cuts: " + lo + " .. " + hi);
+          return;
+        }
+      } catch (e) {
+        log("Background setCuts pending: " + e.message);
+      }
+      if (attempts < 25) {
+        setTimeout(tryApply, Math.min(100 * attempts, 1000));
+      }
+    }
+    tryApply();
+  }
 
   // --- Aladin Lite: load if background survey is requested ---
   let AladinLib = null;
@@ -252,6 +333,7 @@ export async function render({ model, el }) {
   const aladinDiv = document.createElement("div");
   aladinDiv.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;z-index:0";
   if (initBg && AladinLib) {
+    prepareAladinBackgroundDiv(aladinDiv, container);
     container.appendChild(aladinDiv);
   }
 
@@ -501,19 +583,10 @@ export async function render({ model, el }) {
         fov: fovDeg || 180,
         target: raDeg + " " + decDeg,
         survey: hipsUrl,
-        projection: "SIN",
-        showCooGrid: false,
-        showFrame: false,
-        showCooGridControl: false,
-        showSimbadPointerControl: false,
-        showFullscreenControl: false,
-        showLayersControl: false,
-        showGotoControl: false,
-        showShareControl: false,
-        showSettingsControl: false,
-        showZoomControl: false,
+        ...ALADIN_BG_OPTIONS,
       });
       log("Aladin viewer created: " + initBg);
+      applyBackgroundCuts();
     }
 
     // Handle background_survey changes
@@ -524,26 +597,25 @@ export async function render({ model, el }) {
         const hipsUrl = SURVEY_PRESETS[survey] || survey;
         aladin.setBaseImageLayer(hipsUrl);
         container.style.background = "transparent";
+        applyBackgroundCuts();
       } else if (survey && !aladin && !AladinLib) {
         // Need to load Aladin Lite for the first time
         try {
           const mod = await import("https://esm.sh/aladin-lite@3.8.2");
           AladinLib = mod.default;
           await AladinLib.init;
+          prepareAladinBackgroundDiv(aladinDiv, container);
           container.appendChild(aladinDiv);
           container.style.background = "transparent";
           const hipsUrl = SURVEY_PRESETS[survey] || survey;
           aladin = AladinLib.aladin(aladinDiv, {
             fov: (viewFov / DEG2RAD) || 180,
             target: (((viewRA / DEG2RAD) % 360 + 360) % 360) + " " + (viewDec / DEG2RAD),
-            survey: hipsUrl, projection: "SIN",
-            showCooGrid: false, showFrame: false,
-            showCooGridControl: false, showSimbadPointerControl: false,
-            showFullscreenControl: false, showLayersControl: false,
-            showGotoControl: false, showShareControl: false,
-            showSettingsControl: false, showZoomControl: false,
+            survey: hipsUrl,
+            ...ALADIN_BG_OPTIONS,
           });
           log("Aladin loaded on demand: " + survey);
+          applyBackgroundCuts();
         } catch (e) { log("Aladin load failed: " + e.message); }
       } else if (!survey) {
         container.style.background = "#000";
@@ -551,6 +623,8 @@ export async function render({ model, el }) {
       }
       draw();
     });
+    model.on("change:background_cut_min", () => { applyBackgroundCuts(); });
+    model.on("change:background_cut_max", () => { applyBackgroundCuts(); });
 
     // Initial sync — poll until image data arrives from the binary comm channel.
     // Binary traitlet data often lags behind JSON state, so we poll with

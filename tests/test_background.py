@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 
 class TestBackgroundTraitlets:
     def test_default_no_background(self):
@@ -32,6 +34,20 @@ class TestBackgroundTraitlets:
         w = SkyWidget()
         w.background_opacity = 0.5
         assert w.background_opacity == 0.5
+
+    def test_background_cuts_default_nan(self):
+        from astrowidget import SkyWidget
+        w = SkyWidget()
+        assert np.isnan(w.background_cut_min)
+        assert np.isnan(w.background_cut_max)
+
+    def test_set_background_cuts(self):
+        from astrowidget import SkyWidget
+        w = SkyWidget()
+        w.background_cut_min = -10.0
+        w.background_cut_max = 50.0
+        assert w.background_cut_min == -10.0
+        assert w.background_cut_max == 50.0
 
     def test_all_survey_names(self):
         from astrowidget import SkyWidget
