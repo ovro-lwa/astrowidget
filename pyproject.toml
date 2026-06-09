@@ -74,7 +74,7 @@ nodejs = ">=20"
 pip = "*"
 
 [tool.pixi.pypi-dependencies]
-astrowidget = { path = "../astrowidget", editable = true }
+astrowidget = { path = ".", editable = true }
 
 [tool.pixi.environments]
 default = { features = ["dev"], solve-group = "default" }
