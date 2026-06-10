@@ -16,6 +16,7 @@ import {
   celestialToScreen,
   panViewByScreenDrag,
   viewFovAxes,
+  maxSinViewFov,
   measureViewPlaneScales,
   screenToViewLM,
   viewLMToScreen,
@@ -188,6 +189,23 @@ describe("SIN view roundtrip", () => {
   }
 });
 
+describe("maxSinViewFov", () => {
+  it("keeps unit-aspect corners inside the SIN disk", () => {
+    const maxFov = maxSinViewFov(1.0);
+    const { scaleX, scaleY } = viewFovAxes(maxFov, 1.0);
+    expect(Math.hypot(scaleX, scaleY)).toBeLessThanOrEqual(1.0 + 1e-9);
+    const over = viewFovAxes(maxFov * 1.01, 1.0);
+    expect(Math.hypot(over.scaleX, over.scaleY)).toBeGreaterThan(1.0);
+  });
+
+  it("limits wide-aspect views below 180°", () => {
+    const maxFov = maxSinViewFov(1.5);
+    expect(maxFov * RAD2DEG).toBeLessThan(180);
+    const { scaleX, scaleY } = viewFovAxes(maxFov, 1.5);
+    expect(Math.hypot(scaleX, scaleY)).toBeLessThanOrEqual(1.0 + 1e-9);
+  });
+});
+
 describe("panViewByScreenDrag", () => {
   it("Dec drag keeps grabbed sky point under the cursor", () => {
     const fov = 30 * DEG2RAD;
@@ -275,6 +293,52 @@ describe("measureViewPlaneScales", () => {
     const measured = measureViewPlaneScales(aladin, width, height, viewRA, viewDec);
     expect(measured.scaleX).toBeCloseTo(scaleX, 6);
     expect(measured.scaleY).toBeCloseTo(scaleY, 6);
+  });
+
+  it("derives rotation-aware scales from pix2world offsets", () => {
+    const viewRA = 180 * DEG2RAD;
+    const viewDec = 45 * DEG2RAD;
+    const width = 800;
+    const height = 600;
+    const fov = 30 * DEG2RAD;
+    const rotationRad = -45 * DEG2RAD;
+    const { scaleX, scaleY } = viewFovAxes(fov, width / height);
+    const px = 16;
+    const py = 16;
+    const cx = width / 2;
+    const cy = height / 2;
+
+    function worldAt(x, y) {
+      const ndcX = (x / (width / 2)) - 1;
+      const ndcY = -((y / (height / 2)) - 1);
+      const coord = screenToCelestial(
+        ndcX,
+        ndcY,
+        viewRA,
+        viewDec,
+        fov,
+        width / height,
+        null,
+        rotationRad
+      );
+      return [coord.ra * RAD2DEG, coord.dec * RAD2DEG];
+    }
+
+    const aladin = {
+      getRaDec: () => [180, 45],
+      pix2world: (x, y) => worldAt(x, y),
+    };
+
+    const measured = measureViewPlaneScales(
+      aladin,
+      width,
+      height,
+      viewRA,
+      viewDec,
+      rotationRad
+    );
+    expect(measured.scaleX).toBeCloseTo(scaleX, 5);
+    expect(measured.scaleY).toBeCloseTo(scaleY, 5);
   });
 });
 

@@ -40,6 +40,25 @@ export function viewFovAxes(viewFov, aspect) {
 }
 
 /**
+ * Maximum SIN view FOV (largest canvas dimension, radians) keeping all corners
+ * inside the unit projection disk (r ≤ 1).
+ *
+ * @param {number} aspect - Canvas width / height
+ * @returns {number}
+ */
+export function maxSinViewFov(aspect) {
+  let lo = 0.001 * DEG2RAD;
+  let hi = Math.PI;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) * 0.5;
+    const { scaleX, scaleY } = viewFovAxes(mid, aspect);
+    if (Math.hypot(scaleX, scaleY) <= 1.0 + 1e-9) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
  * Measure view-plane (l, m) scales from an Aladin Lite instance.
  *
  * Uses ``pix2world`` at the view center so the WebGL grid matches the HiPS
@@ -50,9 +69,17 @@ export function viewFovAxes(viewFov, aspect) {
  * @param {number} height - View height in CSS pixels
  * @param {number} viewRA - View center RA in radians (optional; uses ``getRaDec`` when omitted)
  * @param {number} viewDec - View center Dec in radians
+ * @param {number} [rotationRad=0] - View rotation from ``-aladin.getRotation()``
  * @returns {{ scaleX: number, scaleY: number } | null}
  */
-export function measureViewPlaneScales(aladin, width, height, viewRA, viewDec) {
+export function measureViewPlaneScales(
+  aladin,
+  width,
+  height,
+  viewRA,
+  viewDec,
+  rotationRad = 0
+) {
   if (!aladin?.pix2world || width < 2 || height < 2) return null;
 
   if (viewRA == null || viewDec == null) {
@@ -65,21 +92,25 @@ export function measureViewPlaneScales(aladin, width, height, viewRA, viewDec) {
   const cy = height * 0.5;
   const px = Math.max(4, width * 0.02);
   const py = Math.max(4, height * 0.02);
+  const c = Math.cos(rotationRad);
+  const s = Math.sin(rotationRad);
 
-  function lmAt(x, y) {
+  function viewPlaneAt(x, y) {
     const [raDeg, decDeg] = aladin.pix2world(x, y);
-    return celestialToLM(raDeg * DEG2RAD, decDeg * DEG2RAD, viewRA, viewDec);
+    const { l, m } = celestialToLM(raDeg * DEG2RAD, decDeg * DEG2RAD, viewRA, viewDec);
+    if (rotationRad === 0) return { l0: l, m0: m };
+    return { l0: l * c - m * s, m0: l * s + m * c };
   }
 
-  const lRight = lmAt(cx + px, cy).l;
-  const lLeft = lmAt(cx - px, cy).l;
-  const mUp = lmAt(cx, cy - py).m;
-  const mDown = lmAt(cx, cy + py).m;
+  const right = viewPlaneAt(cx + px, cy);
+  const left = viewPlaneAt(cx - px, cy);
+  const up = viewPlaneAt(cx, cy - py);
+  const down = viewPlaneAt(cx, cy + py);
 
   const ndcDx = (4 * px) / width;
   const ndcDy = (4 * py) / height;
-  const scaleX = Math.abs(lRight - lLeft) / ndcDx;
-  const scaleY = Math.abs(mUp - mDown) / ndcDy;
+  const scaleX = Math.abs(right.l0 - left.l0) / ndcDx;
+  const scaleY = Math.abs(up.m0 - down.m0) / ndcDy;
 
   if (!Number.isFinite(scaleX) || !Number.isFinite(scaleY) || scaleX < 1e-15 || scaleY < 1e-15) {
     return null;

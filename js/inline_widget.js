@@ -3,7 +3,15 @@
  * SIN view projection fragment shader renders radio images on a celestial sphere.
  */
 
-import { screenToCelestial, panViewByScreenDrag, measureViewPlaneScales, viewFovAxes, DEG2RAD } from "./projection.js";
+import {
+  screenToCelestial,
+  celestialToScreen,
+  panViewByScreenDrag,
+  measureViewPlaneScales,
+  viewFovAxes,
+  maxSinViewFov,
+  DEG2RAD,
+} from "./projection.js";
 
 // Inferno colormap (256 RGB triplets, uint8)
 function makeInfernoUint8() {
@@ -40,7 +48,7 @@ uniform vec2 u_crval, u_cdelt, u_crpix, u_imageSize, u_viewCenter, u_resolution;
 uniform vec2 u_viewScale;
 uniform float u_viewRotation, u_fov, u_opacity;
 uniform int u_stretch, u_showGrid;
-uniform vec2 u_crosshair;  // clicked position (RA, Dec) in radians; (-999,-999) = none
+uniform vec2 u_crosshairScreen;  // NDC; x < -900 = hidden
 out vec4 fragColor;
 
 // Auto-scale grid interval based on FOV
@@ -158,21 +166,16 @@ void main() {
     if (horizonAlpha > 0.0) {
         fragColor.rgb = mix(fragColor.rgb, vec3(0.0, 1.0, 0.5), horizonAlpha);
     }
-    // Crosshair at clicked position
-    if (u_crosshair.x > -900.0) {
-        float angDist = acos(clamp(
-            sin(dec)*sin(u_crosshair.y) + cos(dec)*cos(u_crosshair.y)*cos(ra - u_crosshair.x),
-            -1.0, 1.0));
-        float crossSize = fovDeg * 0.015 * 0.0174533;  // size in radians
-        float crossWidth = fovDeg * 0.002 * 0.0174533;
-        // Draw a "+" shape
-        float dra2 = abs(ra - u_crosshair.x);
-        if (dra2 > 3.14159) dra2 = 6.28318 - dra2;
-        float ddec2 = abs(dec - u_crosshair.y);
-        bool onH = ddec2 < crossWidth && dra2*cos(u_crosshair.y) < crossSize;
-        bool onV = dra2*cos(u_crosshair.y) < crossWidth && ddec2 < crossSize;
+    // Crosshair at clicked position (fixed screen size in NDC)
+    if (u_crosshairScreen.x > -900.0) {
+        float dx = abs(screen.x - u_crosshairScreen.x);
+        float dy = abs(screen.y - u_crosshairScreen.y);
+        float crossArm = 0.035;
+        float crossHair = 0.003;
+        bool onH = dy < crossHair && dx < crossArm;
+        bool onV = dx < crossHair && dy < crossArm;
         if (onH || onV) {
-            fragColor.rgb = vec3(0.0, 1.0, 1.0);  // cyan crosshair
+            fragColor.rgb = vec3(0.0, 1.0, 1.0);
             fragColor.a = 1.0;
         }
     }
@@ -409,7 +412,7 @@ export async function render({ model, el }) {
     // Uniforms
     const loc = {};
     ["u_image","u_cmap","u_crval","u_cdelt","u_crpix","u_imageSize",
-     "u_viewCenter","u_viewScale","u_viewRotation","u_fov","u_opacity","u_stretch","u_showGrid","u_crosshair","u_resolution"].forEach(
+     "u_viewCenter","u_viewScale","u_viewRotation","u_fov","u_opacity","u_stretch","u_showGrid","u_crosshairScreen","u_resolution"].forEach(
       n => loc[n] = gl.getUniformLocation(prog, n)
     );
 
@@ -438,7 +441,7 @@ export async function render({ model, el }) {
     let imgW = 1, imgH = 1, rawData = null;
     let crval = [0,0], cdelt = [1,1], crpix = [0,0];
     let viewRA = 0, viewDec = 0, viewFov = Math.PI;
-    let viewScaleCorrection = null; // { kx, ky } applied to analytic viewFovAxes
+    let measuredViewScales = null; // { scaleX, scaleY } from Aladin pix2world
     let viewRotation = 0; // radians; -aladin.getRotation() when HiPS background active
     let vmin = 0, vmax = 1, opacity = 1, stretch = 0, showGrid = 1;
     let dragging = false;
@@ -492,13 +495,28 @@ export async function render({ model, el }) {
     }
 
     function getViewPlaneScales() {
-      const axes = viewFovAxes(viewFov, getViewAspect());
-      if (!viewScaleCorrection) return axes;
-      return {
-        ...axes,
-        scaleX: axes.scaleX * viewScaleCorrection.kx,
-        scaleY: axes.scaleY * viewScaleCorrection.ky,
-      };
+      if (measuredViewScales) return measuredViewScales;
+      return viewFovAxes(viewFov, getViewAspect());
+    }
+
+    function clampViewFov(fov) {
+      const minFov = 0.001 * DEG2RAD;
+      const maxFov = aladin ? maxSinViewFov(getViewAspect()) : Math.PI;
+      return Math.max(minFov, Math.min(maxFov, fov));
+    }
+
+    function syncViewFromAladin() {
+      if (!aladin?.getRaDec) return;
+      const [raDeg, decDeg] = aladin.getRaDec();
+      viewRA = raDeg * DEG2RAD;
+      viewDec = decDeg * DEG2RAD;
+      if (typeof aladin.getFov === "function") {
+        const fovPair = aladin.getFov();
+        const fw = Array.isArray(fovPair) ? fovPair[0] : fovPair;
+        const fh = Array.isArray(fovPair) ? fovPair[1] : fw;
+        viewFov = Math.max(fw, fh) * DEG2RAD;
+      }
+      syncViewRotationFromAladin();
     }
 
     function syncViewRotationFromAladin() {
@@ -511,33 +529,30 @@ export async function render({ model, el }) {
 
     function updateViewPlaneScales() {
       if (!aladin) {
-        viewScaleCorrection = null;
+        measuredViewScales = null;
         return;
       }
-      const aspect = getViewAspect();
-      const analytic = viewFovAxes(viewFov, aspect);
+      syncViewFromAladin();
       const view = aladin.view;
       const w = view?.width ?? aladinDiv.clientWidth;
       const h = view?.height ?? aladinDiv.clientHeight;
-      const [, decDeg] = aladin.getRaDec();
-
-      if (Math.abs(decDeg) > 75) {
-        if (!viewScaleCorrection) viewScaleCorrection = { kx: 1, ky: 1 };
-        return;
-      }
-
-      const measured = measureViewPlaneScales(aladin, w, h);
-      if (!measured) {
-        viewScaleCorrection = { kx: 1, ky: 1 };
-        return;
-      }
-      viewScaleCorrection = {
-        kx: measured.scaleX / analytic.scaleX,
-        ky: measured.scaleY / analytic.scaleY,
-      };
+      const measured = measureViewPlaneScales(
+        aladin,
+        w,
+        h,
+        viewRA,
+        viewDec,
+        viewRotation
+      );
+      measuredViewScales = measured ?? null;
     }
 
     function draw() {
+      if (aladin) {
+        syncViewRotationFromAladin();
+        updateViewPlaneScales();
+      }
+
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.clearColor(0, 0, 0, 0);  // always transparent — container background provides the black
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -559,7 +574,25 @@ export async function render({ model, el }) {
       gl.uniform1f(loc.u_opacity, opacity);
       gl.uniform1i(loc.u_stretch, stretch);
       gl.uniform1i(loc.u_showGrid, showGrid);
-      gl.uniform2f(loc.u_crosshair, crosshairRA, crosshairDec);
+      let crosshairSX = -999;
+      let crosshairSY = -999;
+      if (crosshairRA > -900) {
+        const chPos = celestialToScreen(
+          crosshairRA,
+          crosshairDec,
+          viewRA,
+          viewDec,
+          viewFov,
+          getViewAspect(),
+          scales,
+          viewRotation
+        );
+        if (chPos) {
+          crosshairSX = chPos.x;
+          crosshairSY = chPos.y;
+        }
+      }
+      gl.uniform2f(loc.u_crosshairScreen, crosshairSX, crosshairSY);
       gl.uniform2f(loc.u_resolution, canvas.width, canvas.height);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -619,9 +652,22 @@ export async function render({ model, el }) {
     model.on("change:vmin", () => { syncDisplay(); uploadImage(); });
     model.on("change:vmax", () => { syncDisplay(); uploadImage(); });
     model.on("change:image_revision", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
-    model.on("change:view_ra", () => { syncView(); draw(); });
-    model.on("change:view_dec", () => { syncView(); draw(); });
-    model.on("change:view_fov", () => { syncView(); draw(); });
+    model.on("change:view_ra", () => {
+      syncView();
+      draw();
+      // Python goto() / update_slice(center=) — keep HiPS background aligned with grid.
+      if (!userInteracting) syncAladin();
+    });
+    model.on("change:view_dec", () => {
+      syncView();
+      draw();
+      if (!userInteracting) syncAladin();
+    });
+    model.on("change:view_fov", () => {
+      syncView();
+      draw();
+      if (!userInteracting) syncAladin();
+    });
     model.on("change:opacity", () => { syncDisplay(); draw(); });
     model.on("change:stretch", () => { syncDisplay(); draw(); });
     model.on("change:show_grid", () => { syncDisplay(); draw(); });
@@ -634,6 +680,7 @@ export async function render({ model, el }) {
     // --- Aladin Lite: JS-side sync (no Python round-trip) ---
     function syncAladin(updateCenter = true) {
       if (!aladin) return;
+      viewFov = clampViewFov(viewFov);
       const fovDeg = viewFov / DEG2RAD;
       if (updateCenter) {
         const raDeg = ((viewRA / DEG2RAD) % 360 + 360) % 360;
@@ -641,6 +688,7 @@ export async function render({ model, el }) {
         aladin.gotoRaDec(raDeg, decDeg);
       }
       aladin.setFoV(fovDeg);
+      syncViewFromAladin();
       updateViewPlaneScales();
     }
 
@@ -892,7 +940,7 @@ export async function render({ model, el }) {
                                   Math.abs(curY - boxStartY) / rect.height);
         const half = viewFov * 0.5;
         viewFov = 2 * Math.asin(Math.min(1, selFrac * Math.sin(half)));
-        viewFov = Math.max(0.001 * DEG2RAD, Math.min(Math.PI, viewFov));
+        viewFov = clampViewFov(viewFov);
 
         model.set("view_ra", viewRA/DEG2RAD);
         model.set("view_dec", viewDec/DEG2RAD);
@@ -945,11 +993,19 @@ export async function render({ model, el }) {
       userInteracting = true;
       if (interactionTimer) clearTimeout(interactionTimer);
       viewFov *= e.deltaY > 0 ? 1.1 : 1/1.1;
-      viewFov = Math.max(0.001*DEG2RAD, Math.min(Math.PI, viewFov));
+      viewFov = clampViewFov(viewFov);
       model.set("view_fov", viewFov/DEG2RAD);
       model.save_changes();
-      syncAladin();
-      requestAnimationFrame(draw);
+      if (aladin) {
+        aladin.setFoV(viewFov / DEG2RAD);
+        requestAnimationFrame(() => {
+          syncViewFromAladin();
+          updateViewPlaneScales();
+          draw();
+        });
+      } else {
+        requestAnimationFrame(draw);
+      }
       interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
     }, { passive: false });
 
