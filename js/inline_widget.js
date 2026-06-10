@@ -1,9 +1,9 @@
 /**
  * SkyWidget renderer using raw WebGL2 (no regl, no bundling).
- * SIN projection fragment shader renders radio images on a celestial sphere.
+ * SIN view projection fragment shader renders radio images on a celestial sphere.
  */
 
-const DEG2RAD = Math.PI / 180;
+import { screenToCelestial, panViewByScreenDrag, measureViewPlaneScales, viewFovAxes, DEG2RAD } from "./projection.js";
 
 // Inferno colormap (256 RGB triplets, uint8)
 function makeInfernoUint8() {
@@ -37,7 +37,8 @@ precision highp float;
 uniform sampler2D u_image;
 uniform sampler2D u_cmap;
 uniform vec2 u_crval, u_cdelt, u_crpix, u_imageSize, u_viewCenter, u_resolution;
-uniform float u_fov, u_opacity;
+uniform vec2 u_viewScale;
+uniform float u_viewRotation, u_fov, u_opacity;
 uniform int u_stretch, u_showGrid;
 uniform vec2 u_crosshair;  // clicked position (RA, Dec) in radians; (-999,-999) = none
 out vec4 fragColor;
@@ -54,12 +55,20 @@ float gridInterval(float fovDeg) {
 
 void main() {
     vec2 screen = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
-    float aspect = u_resolution.x / u_resolution.y;
-    float scale = tan(u_fov * 0.5);
-    float lV = -screen.x * scale * aspect;
-    float mV = screen.y * scale;
+    float scaleX = u_viewScale.x;
+    float scaleY = u_viewScale.y;
+    float l0 = -screen.x * scaleX;
+    float m0 = screen.y * scaleY;
+    float cr = cos(u_viewRotation);
+    float sr = sin(u_viewRotation);
+    float lV = l0 * cr + m0 * sr;
+    float mV = -l0 * sr + m0 * cr;
     float r = sqrt(lV*lV + mV*mV);
-    float c = atan(r);
+    if (r > 1.0) {
+        fragColor = vec4(0, 0, 0, 0);
+        return;
+    }
+    float c = asin(clamp(r, 0.0, 1.0));
     float sc = sin(c), cc = cos(c);
     float sd0 = sin(u_viewCenter.y), cd0 = cos(u_viewCenter.y);
     float dec, ra;
@@ -400,7 +409,7 @@ export async function render({ model, el }) {
     // Uniforms
     const loc = {};
     ["u_image","u_cmap","u_crval","u_cdelt","u_crpix","u_imageSize",
-     "u_viewCenter","u_fov","u_opacity","u_stretch","u_showGrid","u_crosshair","u_resolution"].forEach(
+     "u_viewCenter","u_viewScale","u_viewRotation","u_fov","u_opacity","u_stretch","u_showGrid","u_crosshair","u_resolution"].forEach(
       n => loc[n] = gl.getUniformLocation(prog, n)
     );
 
@@ -429,6 +438,8 @@ export async function render({ model, el }) {
     let imgW = 1, imgH = 1, rawData = null;
     let crval = [0,0], cdelt = [1,1], crpix = [0,0];
     let viewRA = 0, viewDec = 0, viewFov = Math.PI;
+    let viewScaleCorrection = null; // { kx, ky } applied to analytic viewFovAxes
+    let viewRotation = 0; // radians; -aladin.getRotation() when HiPS background active
     let vmin = 0, vmax = 1, opacity = 1, stretch = 0, showGrid = 1;
     let dragging = false;
     let userInteracting = false;  // true during drag and briefly after mouseup
@@ -473,6 +484,59 @@ export async function render({ model, el }) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, imgW, imgH, 0, gl.RGBA, gl.UNSIGNED_BYTE, uint8);
     }
 
+    function getViewAspect() {
+      const view = aladin?.view;
+      const w = view?.width ?? canvas.clientWidth;
+      const h = view?.height ?? canvas.clientHeight;
+      return w / Math.max(h, 1);
+    }
+
+    function getViewPlaneScales() {
+      const axes = viewFovAxes(viewFov, getViewAspect());
+      if (!viewScaleCorrection) return axes;
+      return {
+        ...axes,
+        scaleX: axes.scaleX * viewScaleCorrection.kx,
+        scaleY: axes.scaleY * viewScaleCorrection.ky,
+      };
+    }
+
+    function syncViewRotationFromAladin() {
+      if (!aladin?.getRotation) {
+        viewRotation = 0;
+        return;
+      }
+      viewRotation = -aladin.getRotation() * DEG2RAD;
+    }
+
+    function updateViewPlaneScales() {
+      if (!aladin) {
+        viewScaleCorrection = null;
+        return;
+      }
+      const aspect = getViewAspect();
+      const analytic = viewFovAxes(viewFov, aspect);
+      const view = aladin.view;
+      const w = view?.width ?? aladinDiv.clientWidth;
+      const h = view?.height ?? aladinDiv.clientHeight;
+      const [, decDeg] = aladin.getRaDec();
+
+      if (Math.abs(decDeg) > 75) {
+        if (!viewScaleCorrection) viewScaleCorrection = { kx: 1, ky: 1 };
+        return;
+      }
+
+      const measured = measureViewPlaneScales(aladin, w, h);
+      if (!measured) {
+        viewScaleCorrection = { kx: 1, ky: 1 };
+        return;
+      }
+      viewScaleCorrection = {
+        kx: measured.scaleX / analytic.scaleX,
+        ky: measured.scaleY / analytic.scaleY,
+      };
+    }
+
     function draw() {
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.clearColor(0, 0, 0, 0);  // always transparent — container background provides the black
@@ -487,6 +551,10 @@ export async function render({ model, el }) {
       gl.uniform2f(loc.u_crpix, crpix[0], crpix[1]);
       gl.uniform2f(loc.u_imageSize, imgW, imgH);
       gl.uniform2f(loc.u_viewCenter, viewRA, viewDec);
+      const scales = getViewPlaneScales();
+      gl.uniform2f(loc.u_viewScale, scales.scaleX, scales.scaleY);
+      syncViewRotationFromAladin();
+      gl.uniform1f(loc.u_viewRotation, viewRotation);
       gl.uniform1f(loc.u_fov, viewFov);
       gl.uniform1f(loc.u_opacity, opacity);
       gl.uniform1i(loc.u_stretch, stretch);
@@ -564,13 +632,46 @@ export async function render({ model, el }) {
     });
 
     // --- Aladin Lite: JS-side sync (no Python round-trip) ---
-    function syncAladin() {
+    function syncAladin(updateCenter = true) {
       if (!aladin) return;
-      const raDeg = ((viewRA / DEG2RAD) % 360 + 360) % 360;
-      const decDeg = viewDec / DEG2RAD;
       const fovDeg = viewFov / DEG2RAD;
-      aladin.gotoRaDec(raDeg, decDeg);
+      if (updateCenter) {
+        const raDeg = ((viewRA / DEG2RAD) % 360 + 360) % 360;
+        const decDeg = viewDec / DEG2RAD;
+        aladin.gotoRaDec(raDeg, decDeg);
+      }
       aladin.setFoV(fovDeg);
+      updateViewPlaneScales();
+    }
+
+    // Map browser client coords to Aladin view pixel space (CSS px).
+    function clientToAladinPixels(clientX, clientY) {
+      const rect = aladinDiv.getBoundingClientRect();
+      const view = aladin.view;
+      const w = view?.width ?? rect.width;
+      const h = view?.height ?? rect.height;
+      return {
+        x: (clientX - rect.left) * (w / rect.width),
+        y: (clientY - rect.top) * (h / rect.height),
+      };
+    }
+
+    // Pan using Aladin's WASM projection (matches HiPS background exactly).
+    function applyAladinPan(fromX, fromY, toX, toY) {
+      const wasm = aladin?.view?.wasm;
+      if (!wasm?.goFromTo) return false;
+      let { x: x1, y: y1 } = clientToAladinPixels(fromX, fromY);
+      let { x: x2, y: y2 } = clientToAladinPixels(toX, toY);
+      if (model.get("invert_horizontal_pan") === false) {
+        [x1, x2] = [x2, x1];
+      }
+      wasm.goFromTo(x1, y1, x2, y2);
+      aladin.view.updateCenter();
+      const [raDeg, decDeg] = aladin.getRaDec();
+      viewRA = raDeg * DEG2RAD;
+      viewDec = decDeg * DEG2RAD;
+      syncViewRotationFromAladin();
+      return true;
     }
 
     // Initialize Aladin if background survey is set
@@ -587,6 +688,7 @@ export async function render({ model, el }) {
       });
       log("Aladin viewer created: " + initBg);
       applyBackgroundCuts();
+      updateViewPlaneScales();
     }
 
     // Handle background_survey changes
@@ -616,6 +718,7 @@ export async function render({ model, el }) {
           });
           log("Aladin loaded on demand: " + survey);
           applyBackgroundCuts();
+          updateViewPlaneScales();
         } catch (e) { log("Aladin load failed: " + e.message); }
       } else if (!survey) {
         container.style.background = "#000";
@@ -661,21 +764,21 @@ export async function render({ model, el }) {
     let mouseDownX = 0, mouseDownY = 0, didDrag = false;
     canvas.style.cursor = "grab";
 
-    // Helper: screen coords → (RA, Dec) in radians
-    function screenToRaDec(clientX, clientY) {
+    // Helper: screen coords → normalized [-1,1] with y north-up
+    function clientToScreen(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
-      const sx = ((clientX-rect.left)/rect.width)*2-1;
-      const sy = -(((clientY-rect.top)/rect.height)*2-1);
-      const aspect = canvas.width/canvas.height;
-      const sc = Math.tan(viewFov*0.5);
-      const lV = -sx*sc*aspect, mV = sy*sc;
-      const r = Math.sqrt(lV*lV+mV*mV);
-      if (r < 1e-10) return { ra: viewRA, dec: viewDec };
-      const c = Math.atan(r), snc=Math.sin(c), csc=Math.cos(c);
-      const sd=Math.sin(viewDec), cd=Math.cos(viewDec);
-      const dec2 = Math.asin(csc*sd + mV*snc*cd/r);
-      const ra2 = viewRA + Math.atan2(lV*snc, r*cd*csc - mV*sd*snc);
-      return { ra: ra2, dec: dec2 };
+      return {
+        x: ((clientX - rect.left) / rect.width) * 2 - 1,
+        y: -(((clientY - rect.top) / rect.height) * 2 - 1),
+      };
+    }
+
+    // Helper: screen coords → (RA, Dec) in radians; null outside SIN disk
+    function screenToRaDec(clientX, clientY) {
+      const { x, y } = clientToScreen(clientX, clientY);
+      return screenToCelestial(
+        x, y, viewRA, viewDec, viewFov, getViewAspect(), getViewPlaneScales(), viewRotation
+      );
     }
 
     canvas.addEventListener("mousedown", e => {
@@ -717,35 +820,44 @@ export async function render({ model, el }) {
       if (!dragging) {
         // Hover readout
         const rect = canvas.getBoundingClientRect();
-        const sx = ((e.clientX-rect.left)/rect.width)*2-1;
-        const sy = -(((e.clientY-rect.top)/rect.height)*2-1);
-        const aspect = canvas.width/canvas.height;
-        const sc = Math.tan(viewFov*0.5);
-        const lV = -sx*sc*aspect, mV = sy*sc;
-        const r = Math.sqrt(lV*lV+mV*mV);
-        if (r < 1e-10) {
-          const rd = ((viewRA/DEG2RAD)%360+360)%360;
-          readout.textContent = fmtRA(rd) + "  " + fmtDec(viewDec/DEG2RAD);
+        const sx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const sy = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+        const aspect = getViewAspect();
+        const coord = screenToCelestial(
+          sx, sy, viewRA, viewDec, viewFov, aspect, getViewPlaneScales(), viewRotation
+        );
+        if (coord) {
+          const rd = ((coord.ra / DEG2RAD) % 360 + 360) % 360;
+          readout.textContent = fmtRA(rd) + "  " + fmtDec(coord.dec / DEG2RAD);
         } else {
-          const c = Math.atan(r), snc=Math.sin(c), csc=Math.cos(c);
-          const sd=Math.sin(viewDec), cd=Math.cos(viewDec);
-          const dec2 = Math.asin(csc*sd + mV*snc*cd/r);
-          const ra2 = viewRA + Math.atan2(lV*snc, r*cd*csc - mV*sd*snc);
-          const rd = ((ra2/DEG2RAD)%360+360)%360;
-          readout.textContent = fmtRA(rd) + "  " + fmtDec(dec2/DEG2RAD);
+          readout.textContent = "";
         }
         return;
       }
-      const dx = (e.clientX-lastX)/canvas.clientWidth*viewFov;
-      const dy = (e.clientY-lastY)/canvas.clientHeight*viewFov;
-      const aspect = canvas.width/canvas.height;
-      const cosDec = Math.max(Math.cos(viewDec), 0.01);
-      const panH = model.get("invert_horizontal_pan") === false ? 1 : -1;
-      viewRA -= panH * dx * aspect / cosDec;
-      viewDec = Math.max(-Math.PI/2+0.001, Math.min(Math.PI/2-0.001, viewDec+dy));
-      lastX = e.clientX; lastY = e.clientY;
+      const aspect = getViewAspect();
+      const scales = getViewPlaneScales();
+      const usedAladinPan = applyAladinPan(lastX, lastY, e.clientX, e.clientY);
+      if (!usedAladinPan) {
+        const s1 = clientToScreen(lastX, lastY);
+        const s2 = clientToScreen(e.clientX, e.clientY);
+        const panned = panViewByScreenDrag(
+          s1.x, s1.y, s2.x, s2.y,
+          viewRA, viewDec, viewFov, aspect,
+          {
+            invertHorizontalPan: model.get("invert_horizontal_pan") !== false,
+            scales,
+            rotationRad: viewRotation,
+          }
+        );
+        if (panned) {
+          viewRA = panned.viewRA;
+          viewDec = panned.viewDec;
+        }
+        syncAladin();
+      }
+      lastX = e.clientX;
+      lastY = e.clientY;
       didDrag = true;
-      syncAladin();
       requestAnimationFrame(draw);
     });
     window.addEventListener("mouseup", e => {
@@ -771,13 +883,15 @@ export async function render({ model, el }) {
           rect.left + (boxStartX + curX) / 2,
           rect.top + (boxStartY + curY) / 2
         );
+        if (!center) return;
         viewRA = center.ra;
         viewDec = center.dec;
 
-        // New FOV proportional to selection size
+        // New FOV: SIN-correct scaling from selection fraction
         const selFrac = Math.max(Math.abs(curX - boxStartX) / rect.width,
                                   Math.abs(curY - boxStartY) / rect.height);
-        viewFov = viewFov * selFrac;
+        const half = viewFov * 0.5;
+        viewFov = 2 * Math.asin(Math.min(1, selFrac * Math.sin(half)));
         viewFov = Math.max(0.001 * DEG2RAD, Math.min(Math.PI, viewFov));
 
         model.set("view_ra", viewRA/DEG2RAD);
@@ -798,6 +912,7 @@ export async function render({ model, el }) {
         if (dist < 3) {
           // Click — compute celestial coords and send to Python
           const coord = screenToRaDec(e.clientX, e.clientY);
+          if (!coord) return;
           const raDeg = ((coord.ra / DEG2RAD) % 360 + 360) % 360;
           const decDeg = coord.dec / DEG2RAD;
           model.set("clicked_coord", [raDeg, decDeg]);
@@ -843,6 +958,7 @@ export async function render({ model, el }) {
       const r = container.getBoundingClientRect();
       const d = window.devicePixelRatio||1;
       canvas.width = r.width*d; canvas.height = r.height*d;
+      updateViewPlaneScales();
       draw();
     });
     ro.observe(container);

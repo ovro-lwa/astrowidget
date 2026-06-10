@@ -6,7 +6,7 @@
  * Hover computes (RA, Dec) at cursor position.
  */
 
-import { screenToCelestial, formatRA, formatDec, DEG2RAD, RAD2DEG } from "./projection.js";
+import { screenToCelestial, panViewByScreenDrag, formatRA, formatDec, DEG2RAD, RAD2DEG } from "./projection.js";
 
 /**
  * Set up interaction handlers on a canvas.
@@ -46,21 +46,28 @@ export function setupInteraction(canvas, renderer, model, readoutEl) {
     canvas.style.cursor = "grabbing";
   }
 
+  function clientToScreen(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: ((clientX - rect.left) / rect.width) * 2 - 1,
+      y: -(((clientY - rect.top) / rect.height) * 2 - 1),
+    };
+  }
+
   function onMouseMove(e) {
     if (dragging) {
-      const dx = (e.clientX - lastX) / canvas.clientWidth * viewFov;
-      const dy = (e.clientY - lastY) / canvas.clientHeight * viewFov;
-
-      // RA changes faster near the poles (1/cos(Dec) correction)
-      const cosDec = Math.cos(viewDec);
-      const decClamp = Math.max(cosDec, 0.01); // avoid division by zero near poles
       const aspect = canvas.clientWidth / canvas.clientHeight;
-      const panH = model.get("invert_horizontal_pan") === false ? 1 : -1;
-      viewRA -= panH * dx * aspect / decClamp;
-      viewDec += dy;
-
-      // Clamp Dec to avoid pole singularity
-      viewDec = Math.max(-Math.PI / 2 + 0.001, Math.min(Math.PI / 2 - 0.001, viewDec));
+      const s1 = clientToScreen(lastX, lastY);
+      const s2 = clientToScreen(e.clientX, e.clientY);
+      const panned = panViewByScreenDrag(
+        s1.x, s1.y, s2.x, s2.y,
+        viewRA, viewDec, viewFov, aspect,
+        { invertHorizontalPan: model.get("invert_horizontal_pan") !== false }
+      );
+      if (panned) {
+        viewRA = panned.viewRA;
+        viewDec = panned.viewDec;
+      }
 
       lastX = e.clientX;
       lastY = e.clientY;
