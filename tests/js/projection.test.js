@@ -22,6 +22,7 @@ import {
   viewLMToScreen,
   formatRA,
   formatDec,
+  skyCoordFromClient,
   DEG2RAD,
   RAD2DEG,
 } from "../../js/projection.js";
@@ -339,6 +340,66 @@ describe("measureViewPlaneScales", () => {
     );
     expect(measured.scaleX).toBeCloseTo(scaleX, 5);
     expect(measured.scaleY).toBeCloseTo(scaleY, 5);
+  });
+});
+
+describe("skyCoordFromClient", () => {
+  it("uses pix2world when Aladin is available", () => {
+    const aladin = {
+      pix2world: (x, y) => [180 + x * 0.01, 45 - y * 0.01],
+    };
+    const clientToAladinPixels = (clientX, clientY) => ({
+      x: clientX,
+      y: clientY,
+    });
+    const screenToRaDec = () => ({ ra: 0, dec: 0 });
+
+    const coord = skyCoordFromClient(
+      100,
+      200,
+      aladin,
+      clientToAladinPixels,
+      screenToRaDec
+    );
+
+    expect(coord).not.toBeNull();
+    expect(coord.ra * RAD2DEG).toBeCloseTo(181, 6);
+    expect(coord.dec * RAD2DEG).toBeCloseTo(43, 6);
+  });
+
+  it("falls back to screenToRaDec without Aladin", () => {
+    const expected = { ra: 2.5, dec: 0.75 };
+    const screenToRaDec = (clientX, clientY) => {
+      expect(clientX).toBe(50);
+      expect(clientY).toBe(60);
+      return expected;
+    };
+
+    const coord = skyCoordFromClient(
+      50,
+      60,
+      null,
+      () => ({ x: 0, y: 0 }),
+      screenToRaDec
+    );
+
+    expect(coord).toBe(expected);
+  });
+
+  it("returns null when pix2world yields invalid coordinates", () => {
+    const aladin = {
+      pix2world: () => [Number.NaN, 45],
+    };
+
+    const coord = skyCoordFromClient(
+      10,
+      20,
+      aladin,
+      (x, y) => ({ x, y }),
+      () => ({ ra: 0, dec: 0 })
+    );
+
+    expect(coord).toBeNull();
   });
 });
 

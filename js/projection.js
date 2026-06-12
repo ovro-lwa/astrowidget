@@ -367,4 +367,37 @@ export function formatDec(decDeg) {
   return `${sign}${d}°${String(m).padStart(2, "0")}'${s.toFixed(1).padStart(4, "0")}"`;
 }
 
+/**
+ * Map browser client coordinates to (RA, Dec) in radians.
+ *
+ * When an Aladin Lite instance with ``pix2world`` is available (HiPS background),
+ * uses the WASM sky projection so clicks match the background layer. Otherwise
+ * falls back to the WebGL SIN ``screenToRaDec`` path.
+ *
+ * @param {number} clientX - Browser client X
+ * @param {number} clientY - Browser client Y
+ * @param {object|null} aladin - Aladin Lite instance
+ * @param {(clientX: number, clientY: number) => { x: number, y: number }} clientToAladinPixels
+ * @param {(clientX: number, clientY: number) => { ra: number, dec: number } | null} screenToRaDec
+ * @returns {{ ra: number, dec: number } | null}
+ */
+export function skyCoordFromClient(
+  clientX,
+  clientY,
+  aladin,
+  clientToAladinPixels,
+  screenToRaDec
+) {
+  if (aladin?.pix2world) {
+    const { x, y } = clientToAladinPixels(clientX, clientY);
+    const world = aladin.pix2world(x, y);
+    if (!world || world.length < 2) return null;
+    const raDeg = world[0];
+    const decDeg = world[1];
+    if (!Number.isFinite(raDeg) || !Number.isFinite(decDeg)) return null;
+    return { ra: raDeg * DEG2RAD, dec: decDeg * DEG2RAD };
+  }
+  return screenToRaDec(clientX, clientY);
+}
+
 export { DEG2RAD, RAD2DEG };

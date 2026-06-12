@@ -7,6 +7,7 @@ raw float32 bytes — no FITS serialization.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 _STATIC = Path(__file__).parent / "static"
 _JS_PATH = _STATIC / "widget.js"
+_VIEW_GESTURE_DEBOUNCE_S = 0.3
 
 
 class SkyWidget(anywidget.AnyWidget):
@@ -62,6 +64,10 @@ class SkyWidget(anywidget.AnyWidget):
     view_dec = traitlets.Float(0.0).tag(sync=True)  # current view center Dec in degrees
     view_fov = traitlets.Float(180.0).tag(sync=True) # field of view in degrees
 
+    # --- View-locked overlay (reproject texture to match view center after pan) ---
+    overlay_view_lock = traitlets.Bool(False).tag(sync=True)
+    view_gesture_revision = traitlets.Int(0).tag(sync=True)
+
     invert_horizontal_pan = traitlets.Bool(True).tag(sync=True)  # map-style horizontal pan (default)
 
     # --- Display options ---
@@ -84,6 +90,10 @@ class SkyWidget(anywidget.AnyWidget):
     # --- Click events (JS → Python) ---
     clicked_coord = traitlets.Tuple((0.0, 0.0)).tag(sync=True)  # (RA, Dec) in degrees
     clicked_lm = traitlets.Tuple((0.0, 0.0)).tag(sync=True)     # (l, m) direction cosines
+    # Diagnostic: both projection readouts for the same click pixel,
+    # [hips_ra, hips_dec, webgl_ra, webgl_dec] in degrees (NaN when unavailable).
+    # Lets callers detect overlay/HiPS projection disagreement.
+    clicked_coord_debug = traitlets.List(trait=traitlets.Float()).tag(sync=True)
     # Monotonic counter so every canvas click notifies Python even if (l, m) is unchanged.
     click_tick = traitlets.Int(0).tag(sync=True)
 
@@ -105,7 +115,10 @@ class SkyWidget(anywidget.AnyWidget):
         self._display_wcs = None
         self._aladin = None
         self._suppress_slice_observer = False
+        self._suppress_gesture_observer = False
+        self._gesture_reproject_timer: threading.Timer | None = None
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
+        self.observe(self._on_view_gesture_revision, names=["view_gesture_revision"])
 
     def _update_display_wcs(self) -> None:
         """Rebuild display WCS for the current time slice (strided to cube resolution)."""
@@ -152,6 +165,7 @@ class SkyWidget(anywidget.AnyWidget):
         percentile_high: float = 99.0,
         center: SkyCoord | None = None,
         fov: u.Quantity | None = None,
+        update_view: bool = True,
     ) -> None:
         """Send image bytes, WCS, scaling, and optional view in one frontend draw."""
         from astropy.wcs import WCS as AstropyWCS
@@ -204,11 +218,12 @@ class SkyWidget(anywidget.AnyWidget):
             self.image_data = data.tobytes()
             if limits is not None:
                 self.vmin, self.vmax = limits
-            if center is not None:
-                self.view_ra = float(center.icrs.ra.deg)
-                self.view_dec = float(center.icrs.dec.deg)
-            if fov is not None:
-                self.view_fov = float(fov.to(u.deg).value)
+            if update_view:
+                if center is not None:
+                    self.view_ra = float(center.icrs.ra.deg)
+                    self.view_dec = float(center.icrs.dec.deg)
+                if fov is not None:
+                    self.view_fov = float(fov.to(u.deg).value)
             self.image_revision += 1
 
     def _on_slice_change(self, change) -> None:
@@ -244,6 +259,72 @@ class SkyWidget(anywidget.AnyWidget):
             raise ValueError(f"data must be 2D, got {data.ndim}D")
 
         self._push_image_frame(data, wcs)
+
+    def view_center_skycoord(self) -> SkyCoord:
+        """Return the current view center as an ICRS sky coordinate."""
+        import astropy.units as u
+        from astropy.coordinates import SkyCoord
+
+        return SkyCoord(ra=self.view_ra * u.deg, dec=self.view_dec * u.deg, frame="icrs")
+
+    def _cancel_gesture_reproject_timer(self) -> None:
+        if self._gesture_reproject_timer is not None:
+            self._gesture_reproject_timer.cancel()
+            self._gesture_reproject_timer = None
+
+    def _schedule_reproject_at_view(self) -> None:
+        self._cancel_gesture_reproject_timer()
+        timer = threading.Timer(_VIEW_GESTURE_DEBOUNCE_S, self._run_debounced_reproject_at_view)
+        timer.daemon = True
+        self._gesture_reproject_timer = timer
+        timer.start()
+
+    def _run_debounced_reproject_at_view(self) -> None:
+        self._gesture_reproject_timer = None
+        self.reproject_at_view()
+
+    def _on_view_gesture_revision(self, _change) -> None:
+        """Debounced handler: reproject overlay to current view after pan/zoom."""
+        if self._suppress_gesture_observer or not self.overlay_view_lock:
+            return
+        if self._cube is None or self.image_shape == (0, 0):
+            return
+        self._schedule_reproject_at_view()
+
+    def reproject_at_view(
+        self,
+        *,
+        percentile_low: float = 1.0,
+        percentile_high: float = 99.0,
+    ) -> None:
+        """Re-upload the current slice reprojected to ``view_ra``/``view_dec``.
+
+        No-op when ``overlay_view_lock`` is false, no cube is loaded, or the
+        overlay was cleared. Does not change view traits (``update_view=False``).
+        """
+        if not self.overlay_view_lock:
+            return
+        if self._cube is None or self._display_wcs is None:
+            return
+        if self.image_shape == (0, 0):
+            return
+        center = self.view_center_skycoord()
+        self._push_image_frame(
+            self._cube.image(self.time_idx, self.freq_idx),
+            self._display_wcs,
+            percentile_low=percentile_low,
+            percentile_high=percentile_high,
+            center=center,
+            fov=None,
+            update_view=False,
+        )
+
+    def clear_image(self) -> None:
+        """Remove the radio overlay until the next :meth:`update_slice` / :meth:`set_image`."""
+        with self.hold_trait_notifications():
+            self.image_data = b""
+            self.image_shape = (0, 0)
+            self.image_revision += 1
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
@@ -343,6 +424,7 @@ class SkyWidget(anywidget.AnyWidget):
         fov: u.Quantity | None = None,
         percentile_low: float | None = None,
         percentile_high: float | None = None,
+        view_lock: bool | None = None,
     ) -> None:
         """Update the displayed image to a different time/frequency slice.
 
@@ -350,6 +432,9 @@ class SkyWidget(anywidget.AnyWidget):
 
         Optional ``center`` and ``fov`` update the view in the same atomic
         frontend redraw as the new slice (avoids a transient WCS/image mismatch).
+        When ``view_lock`` is true (or ``overlay_view_lock`` is enabled) and
+        ``center`` is omitted, the slice is reprojected to the current
+        ``view_ra``/``view_dec``. An explicit ``center`` always overrides view lock.
         ``percentile_low`` / ``percentile_high`` override the default display
         scaling for this slice.
 
@@ -365,13 +450,20 @@ class SkyWidget(anywidget.AnyWidget):
             Field of view for ``center`` (e.g. ``8 * u.deg``).
         percentile_low, percentile_high : float, optional
             Percentile limits for ``vmin``/``vmax`` on this slice.
+        view_lock : bool, optional
+            When true, reproject to current view center if ``center`` is omitted.
+            Defaults to ``overlay_view_lock``.
         """
         if not hasattr(self, "_cube") or self._cube is None:
             raise RuntimeError("Call set_dataset() before update_slice()")
+        use_view_lock = self.overlay_view_lock if view_lock is None else view_lock
+        if use_view_lock and center is None:
+            center = self.view_center_skycoord()
         time_changed = int(time_idx) != int(self.time_idx)
         scale_low = 1.0 if percentile_low is None else float(percentile_low)
         scale_high = 99.0 if percentile_high is None else float(percentile_high)
         self._suppress_slice_observer = True
+        self._suppress_gesture_observer = True
         try:
             with self.hold_trait_notifications():
                 self.time_idx = int(time_idx)
@@ -394,6 +486,7 @@ class SkyWidget(anywidget.AnyWidget):
             )
         finally:
             self._suppress_slice_observer = False
+            self._suppress_gesture_observer = False
 
     def overlay(self, survey: str = "DSS", height: int = 600):
         """Display this widget overlaid on HiPS survey tiles.
