@@ -43,13 +43,14 @@ ds = open_dataset(zarr.MemoryStore())
 
 ## WCS Extraction
 
-`get_wcs(ds, var="SKY")` searches for the FITS WCS header string in three locations (in order):
+`get_wcs(ds, var="SKY", time_idx=0)` searches for the FITS WCS header string in four locations (in order):
 
-1. **Variable attrs**: `ds["SKY"].attrs["fits_wcs_header"]`
-2. **Dataset attrs**: `ds.attrs["fits_wcs_header"]`
-3. **0-D variable**: `ds["wcs_header_str"]` (bytes → string → Header)
+1. **Per-time variable**: `ds["wcs_header_str"][time_idx]` when `wcs_header_str` has a `time` dimension
+2. **Variable attrs**: `ds["SKY"].attrs["fits_wcs_header"]`
+3. **Dataset attrs**: `ds.attrs["fits_wcs_header"]`
+4. **0-D variable**: `ds["wcs_header_str"]` (bytes → string → Header)
 
-This redundant storage pattern is inherited from ovro-lwa-portal's FITS→zarr conversion, which writes the WCS header to all three locations to survive xarray merge operations.
+This redundant storage pattern is inherited from ovro-lwa-portal's FITS→zarr conversion, which writes WCS header metadata redundantly to survive xarray merge operations.
 
 ```python
 from astrowidget import get_wcs

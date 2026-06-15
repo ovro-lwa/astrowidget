@@ -74,8 +74,13 @@ class PreloadedCube:
         return data.astype(np.float32, copy=False)
 
     def image(self, time_idx: int = 0, freq_idx: int = 0) -> np.ndarray:
-        """Get a 2D image slice, transposed for display (m, l) → (y, x)."""
-        return self._load_slice(time_idx, freq_idx).T
+        """Get a 2D image slice in ``(l, m)`` order matching the display WCS.
+
+        The WebGL shader maps WCS axis 1 → image column 0 and axis 2 → column 1.
+        Do not transpose here; transposing ``(l, m)`` to ``(m, l)`` mis-registers the
+        sky overlay when ``CRVAL`` changes per time step.
+        """
+        return self._load_slice(time_idx, freq_idx)
 
     def spectrum(self, l_idx: int, m_idx: int, time_idx: int) -> np.ndarray:
         """Get a 1D frequency spectrum at a display pixel and time."""

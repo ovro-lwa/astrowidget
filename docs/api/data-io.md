@@ -50,20 +50,22 @@ ds = open_dataset("https://server.org/data.zarr")
 ```python
 from astrowidget import get_wcs
 
-wcs = get_wcs(ds, var="SKY")
+wcs = get_wcs(ds, var="SKY", time_idx=0)
 ```
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `ds` | `xr.Dataset` | required | Dataset with WCS metadata |
 | `var` | `str` | `"SKY"` | Variable to check attrs on first |
+| `time_idx` | `int` | `0` | Time index used for per-time `wcs_header_str` |
 
 Returns `astropy.wcs.WCS`.
 
-Searches three locations for the WCS header string:
-1. `ds[var].attrs["fits_wcs_header"]`
-2. `ds.attrs["fits_wcs_header"]`
-3. `ds["wcs_header_str"]` (0-D variable, bytes → string)
+Searches four locations for the WCS header string:
+1. `ds["wcs_header_str"]` with a `time` dimension (per-time header at `time_idx`)
+2. `ds[var].attrs["fits_wcs_header"]`
+3. `ds.attrs["fits_wcs_header"]`
+4. scalar `ds["wcs_header_str"]` (0-D variable, bytes → string)
 
 Raises `ValueError` if no WCS header is found.
 
