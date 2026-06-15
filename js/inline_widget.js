@@ -64,6 +64,21 @@ float gridInterval(float fovDeg) {
 
 void main() {
     vec2 screen = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
+
+    // Screen-space crosshair (works with HiPS-only or overlay)
+    if (u_crosshairScreen.x > -900.0) {
+        float dx = abs(screen.x - u_crosshairScreen.x);
+        float dy = abs(screen.y - u_crosshairScreen.y);
+        float crossArm = 0.035;
+        float crossHair = 0.003;
+        bool onH = dy < crossHair && dx < crossArm;
+        bool onV = dx < crossHair && dy < crossArm;
+        if (onH || onV) {
+            fragColor = vec4(0.0, 1.0, 1.0, 1.0);
+            return;
+        }
+    }
+
     float scaleX = u_viewScale.x;
     float scaleY = u_viewScale.y;
     float l0 = -screen.x * scaleX;
@@ -158,19 +173,6 @@ void main() {
     // Overlay grid lines on top of image
     if (gridAlpha > 0.0) {
         fragColor.rgb = mix(fragColor.rgb, vec3(1.0), gridAlpha);
-    }
-    // Crosshair at clicked position (fixed screen size in NDC)
-    if (u_crosshairScreen.x > -900.0) {
-        float dx = abs(screen.x - u_crosshairScreen.x);
-        float dy = abs(screen.y - u_crosshairScreen.y);
-        float crossArm = 0.035;
-        float crossHair = 0.003;
-        bool onH = dy < crossHair && dx < crossArm;
-        bool onV = dx < crossHair && dy < crossArm;
-        if (onH || onV) {
-            fragColor.rgb = vec3(0.0, 1.0, 1.0);
-            fragColor.a = 1.0;
-        }
     }
     // Premultiply alpha for correct compositing with background
     fragColor.rgb *= fragColor.a;
@@ -438,9 +440,11 @@ export async function render({ model, el }) {
     let viewRotation = 0; // radians; -aladin.getRotation() when HiPS background active
     let vmin = 0, vmax = 1, opacity = 1, stretch = 0, showGrid = 1;
     let dragging = false;
+    let pendingPan = false;
     let userInteracting = false;  // true during drag and briefly after mouseup
     let interactionTimer = null;
     let crosshairRA = -999, crosshairDec = -999;
+    let crosshairScreenX = -999, crosshairScreenY = -999;
     const stretchMap = { linear:0, log:1, sqrt:2, asinh:3 };
 
     // Interaction mode: "pan" or "boxzoom"
@@ -568,7 +572,10 @@ export async function render({ model, el }) {
       gl.uniform1i(loc.u_showGrid, showGrid);
       let crosshairSX = -999;
       let crosshairSY = -999;
-      if (crosshairRA > -900) {
+      if (crosshairScreenX > -900) {
+        crosshairSX = crosshairScreenX;
+        crosshairSY = crosshairScreenY;
+      } else if (crosshairRA > -900) {
         const chPos = celestialToScreen(
           crosshairRA,
           crosshairDec,
@@ -677,12 +684,14 @@ export async function render({ model, el }) {
       syncDisplay();
       syncImage();
       syncWCS();
-      // Authoritative slice load: view + WCS + image arrive in one Python batch.
-      // Apply view from model (not syncView — skips during userInteracting) and
-      // defer draw so view_ra handlers cannot paint before image_data syncs.
-      applyViewFromModel();
+      // Authoritative slice load: WCS + image arrive in one Python batch.
+      // Do not syncAladin here — view_lock overlay swaps must not nudge HiPS FOV.
+      // View changes still flow through change:view_* → onPythonViewChange.
+      if (!model.get("overlay_view_lock")) {
+        applyViewFromModel();
+      }
       measuredViewScales = null;
-      if (aladin) syncAladin();
+      if (aladin) updateViewPlaneScales();
       scheduleDraw();
     });
     function finishViewGesture() {
@@ -831,7 +840,7 @@ export async function render({ model, el }) {
       if (hasData) {
         log("Data arrived after " + _pollCount + " poll(s)");
         requestAnimationFrame(draw);
-        syncAladin();
+        // Do not syncAladin() — preserve user pan/zoom; image_revision already drew.
         initialRA = viewRA; initialDec = viewDec; initialFov = viewFov;
         return;
       }
@@ -896,12 +905,18 @@ export async function render({ model, el }) {
         boxOverlay.style.height = "0";
         boxOverlay.style.display = "block";
       } else {
-        dragging = true;
+        pendingPan = true;
         lastX = e.clientX; lastY = e.clientY;
         canvas.style.cursor = "grabbing";
       }
     });
     window.addEventListener("mousemove", e => {
+      if (pendingPan && !dragging) {
+        const dist = Math.sqrt((e.clientX - mouseDownX) ** 2 + (e.clientY - mouseDownY) ** 2);
+        if (dist < 3) return;
+        pendingPan = false;
+        dragging = true;
+      }
       if (boxing) {
         // Box zoom: draw selection rectangle
         const rect = container.getBoundingClientRect();
@@ -1000,8 +1015,10 @@ export async function render({ model, el }) {
         finishViewGesture();
         return;
       }
-      if (dragging) {
+      if (dragging || pendingPan) {
+        const wasDragging = dragging;
         dragging = false;
+        pendingPan = false;
         canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
         // Keep userInteracting true to absorb model echo, then release
         interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
@@ -1049,7 +1066,10 @@ export async function render({ model, el }) {
           model.set("click_tick", (prevTick == null ? 0 : prevTick) + 1);
           model.save_changes();
 
-          // Set crosshair position
+          // Fixed screen-space crosshair at click (HiPS-aligned coords above).
+          const screenPos = clientToScreen(e.clientX, e.clientY);
+          crosshairScreenX = screenPos.x;
+          crosshairScreenY = screenPos.y;
           crosshairRA = coord.ra;
           crosshairDec = coord.dec;
           requestAnimationFrame(draw);

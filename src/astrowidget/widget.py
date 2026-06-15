@@ -457,6 +457,7 @@ class SkyWidget(anywidget.AnyWidget):
         if not hasattr(self, "_cube") or self._cube is None:
             raise RuntimeError("Call set_dataset() before update_slice()")
         use_view_lock = self.overlay_view_lock if view_lock is None else view_lock
+        explicit_center = center is not None
         if use_view_lock and center is None:
             center = self.view_center_skycoord()
         time_changed = int(time_idx) != int(self.time_idx)
@@ -483,6 +484,7 @@ class SkyWidget(anywidget.AnyWidget):
                 percentile_high=scale_high,
                 center=center,
                 fov=fov,
+                update_view=fov is not None or not use_view_lock or explicit_center,
             )
         finally:
             self._suppress_slice_observer = False
