@@ -1,9 +1,18 @@
 /**
  * SkyWidget renderer using raw WebGL2 (no regl, no bundling).
- * SIN projection fragment shader renders radio images on a celestial sphere.
+ * SIN view projection fragment shader renders radio images on a celestial sphere.
  */
 
-const DEG2RAD = Math.PI / 180;
+import {
+  screenToCelestial,
+  celestialToScreen,
+  panViewByScreenDrag,
+  measureViewPlaneScales,
+  viewFovAxes,
+  maxSinViewFov,
+  skyCoordFromClient,
+  DEG2RAD,
+} from "./projection.js";
 
 // Inferno colormap (256 RGB triplets, uint8)
 function makeInfernoUint8() {
@@ -37,9 +46,10 @@ precision highp float;
 uniform sampler2D u_image;
 uniform sampler2D u_cmap;
 uniform vec2 u_crval, u_cdelt, u_crpix, u_imageSize, u_viewCenter, u_resolution;
-uniform float u_fov, u_opacity;
+uniform vec2 u_viewScale;
+uniform float u_viewRotation, u_fov, u_opacity;
 uniform int u_stretch, u_showGrid;
-uniform vec2 u_crosshair;  // clicked position (RA, Dec) in radians; (-999,-999) = none
+uniform vec2 u_crosshairScreen;  // NDC; x < -900 = hidden
 out vec4 fragColor;
 
 // Auto-scale grid interval based on FOV
@@ -54,12 +64,35 @@ float gridInterval(float fovDeg) {
 
 void main() {
     vec2 screen = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
-    float aspect = u_resolution.x / u_resolution.y;
-    float scale = tan(u_fov * 0.5);
-    float lV = -screen.x * scale * aspect;
-    float mV = screen.y * scale;
+
+    // Screen-space crosshair (works with HiPS-only or overlay)
+    if (u_crosshairScreen.x > -900.0) {
+        float dx = abs(screen.x - u_crosshairScreen.x);
+        float dy = abs(screen.y - u_crosshairScreen.y);
+        float crossArm = 0.035;
+        float crossHair = 0.003;
+        bool onH = dy < crossHair && dx < crossArm;
+        bool onV = dx < crossHair && dy < crossArm;
+        if (onH || onV) {
+            fragColor = vec4(0.0, 1.0, 1.0, 1.0);
+            return;
+        }
+    }
+
+    float scaleX = u_viewScale.x;
+    float scaleY = u_viewScale.y;
+    float l0 = -screen.x * scaleX;
+    float m0 = screen.y * scaleY;
+    float cr = cos(u_viewRotation);
+    float sr = sin(u_viewRotation);
+    float lV = l0 * cr + m0 * sr;
+    float mV = -l0 * sr + m0 * cr;
     float r = sqrt(lV*lV + mV*mV);
-    float c = atan(r);
+    if (r > 1.0) {
+        fragColor = vec4(0, 0, 0, 0);
+        return;
+    }
+    float c = asin(clamp(r, 0.0, 1.0));
     float sc = sin(c), cc = cos(c);
     float sd0 = sin(u_viewCenter.y), cd0 = cos(u_viewCenter.y);
     float dec, ra;
@@ -98,11 +131,7 @@ void main() {
         if (decRem < lineWidth || decRem > interval - lineWidth) gridAlpha = 0.35;
     }
 
-    // --- Horizon circle (SIN projection boundary) ---
-    float horizonAlpha = 0.0;
-    if (abs(cosAng) < 0.008) horizonAlpha = 0.5;
-
-    // Outside the visible hemisphere
+    // Outside the visible hemisphere (image SIN tangent plane)
     if (cosAng <= 0.0) {
         // Show grid even outside image (on the "sky" background)
         if (gridAlpha > 0.0) {
@@ -115,15 +144,15 @@ void main() {
 
     float l = cdP * sin(dra);
     float m = sdP*cd0P - cdP*sd0P*cdra;
+    // px/py are 0-based WCS axis 1/2; texture is (width=n_m, height=n_l) from numpy (l, m).
     float px = l/u_cdelt.x + u_crpix.x - 1.0;
     float py = m/u_cdelt.y + u_crpix.y - 1.0;
-    vec2 uv = vec2(px/u_imageSize.x, py/u_imageSize.y);
+    vec2 uv = vec2(py/u_imageSize.x, px/u_imageSize.y);
 
     // Outside image bounds
     if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) {
-        if (gridAlpha > 0.0 || horizonAlpha > 0.0) {
-            float a = max(gridAlpha, horizonAlpha);
-            fragColor = vec4(1.0, 1.0, 1.0, a * 0.5);
+        if (gridAlpha > 0.0) {
+            fragColor = vec4(1.0, 1.0, 1.0, gridAlpha * 0.5);
         } else {
             fragColor = vec4(0,0,0,0);
         }
@@ -144,28 +173,6 @@ void main() {
     // Overlay grid lines on top of image
     if (gridAlpha > 0.0) {
         fragColor.rgb = mix(fragColor.rgb, vec3(1.0), gridAlpha);
-    }
-    // Overlay horizon circle
-    if (horizonAlpha > 0.0) {
-        fragColor.rgb = mix(fragColor.rgb, vec3(0.0, 1.0, 0.5), horizonAlpha);
-    }
-    // Crosshair at clicked position
-    if (u_crosshair.x > -900.0) {
-        float angDist = acos(clamp(
-            sin(dec)*sin(u_crosshair.y) + cos(dec)*cos(u_crosshair.y)*cos(ra - u_crosshair.x),
-            -1.0, 1.0));
-        float crossSize = fovDeg * 0.015 * 0.0174533;  // size in radians
-        float crossWidth = fovDeg * 0.002 * 0.0174533;
-        // Draw a "+" shape
-        float dra2 = abs(ra - u_crosshair.x);
-        if (dra2 > 3.14159) dra2 = 6.28318 - dra2;
-        float ddec2 = abs(dec - u_crosshair.y);
-        bool onH = ddec2 < crossWidth && dra2*cos(u_crosshair.y) < crossSize;
-        bool onV = dra2*cos(u_crosshair.y) < crossWidth && ddec2 < crossSize;
-        if (onH || onV) {
-            fragColor.rgb = vec3(0.0, 1.0, 1.0);  // cyan crosshair
-            fragColor.a = 1.0;
-        }
     }
     // Premultiply alpha for correct compositing with background
     fragColor.rgb *= fragColor.a;
@@ -400,7 +407,7 @@ export async function render({ model, el }) {
     // Uniforms
     const loc = {};
     ["u_image","u_cmap","u_crval","u_cdelt","u_crpix","u_imageSize",
-     "u_viewCenter","u_fov","u_opacity","u_stretch","u_showGrid","u_crosshair","u_resolution"].forEach(
+     "u_viewCenter","u_viewScale","u_viewRotation","u_fov","u_opacity","u_stretch","u_showGrid","u_crosshairScreen","u_resolution"].forEach(
       n => loc[n] = gl.getUniformLocation(prog, n)
     );
 
@@ -429,11 +436,15 @@ export async function render({ model, el }) {
     let imgW = 1, imgH = 1, rawData = null;
     let crval = [0,0], cdelt = [1,1], crpix = [0,0];
     let viewRA = 0, viewDec = 0, viewFov = Math.PI;
+    let measuredViewScales = null; // { scaleX, scaleY } from Aladin pix2world
+    let viewRotation = 0; // radians; -aladin.getRotation() when HiPS background active
     let vmin = 0, vmax = 1, opacity = 1, stretch = 0, showGrid = 1;
     let dragging = false;
+    let pendingPan = false;
     let userInteracting = false;  // true during drag and briefly after mouseup
     let interactionTimer = null;
     let crosshairRA = -999, crosshairDec = -999;
+    let crosshairScreenX = -999, crosshairScreenY = -999;
     const stretchMap = { linear:0, log:1, sqrt:2, asinh:3 };
 
     // Interaction mode: "pan" or "boxzoom"
@@ -473,7 +484,70 @@ export async function render({ model, el }) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, imgW, imgH, 0, gl.RGBA, gl.UNSIGNED_BYTE, uint8);
     }
 
+    function getViewAspect() {
+      const view = aladin?.view;
+      const w = view?.width ?? canvas.clientWidth;
+      const h = view?.height ?? canvas.clientHeight;
+      return w / Math.max(h, 1);
+    }
+
+    function getViewPlaneScales() {
+      if (measuredViewScales) return measuredViewScales;
+      return viewFovAxes(viewFov, getViewAspect());
+    }
+
+    function clampViewFov(fov) {
+      const minFov = 0.001 * DEG2RAD;
+      const maxFov = aladin ? maxSinViewFov(getViewAspect()) : Math.PI;
+      return Math.max(minFov, Math.min(maxFov, fov));
+    }
+
+    function syncViewFromAladin() {
+      if (!aladin?.getRaDec) return;
+      const [raDeg, decDeg] = aladin.getRaDec();
+      viewRA = raDeg * DEG2RAD;
+      viewDec = decDeg * DEG2RAD;
+      if (typeof aladin.getFov === "function") {
+        const fovPair = aladin.getFov();
+        const fw = Array.isArray(fovPair) ? fovPair[0] : fovPair;
+        const fh = Array.isArray(fovPair) ? fovPair[1] : fw;
+        viewFov = Math.max(fw, fh) * DEG2RAD;
+      }
+      syncViewRotationFromAladin();
+    }
+
+    function syncViewRotationFromAladin() {
+      if (!aladin?.getRotation) {
+        viewRotation = 0;
+        return;
+      }
+      viewRotation = -aladin.getRotation() * DEG2RAD;
+    }
+
+    function updateViewPlaneScales() {
+      if (!aladin) {
+        measuredViewScales = null;
+        return;
+      }
+      const view = aladin.view;
+      const w = view?.width ?? aladinDiv.clientWidth;
+      const h = view?.height ?? aladinDiv.clientHeight;
+      const measured = measureViewPlaneScales(
+        aladin,
+        w,
+        h,
+        viewRA,
+        viewDec,
+        viewRotation
+      );
+      measuredViewScales = measured ?? null;
+    }
+
     function draw() {
+      if (aladin) {
+        updateViewPlaneScales();
+      }
+
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.clearColor(0, 0, 0, 0);  // always transparent — container background provides the black
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -487,22 +561,63 @@ export async function render({ model, el }) {
       gl.uniform2f(loc.u_crpix, crpix[0], crpix[1]);
       gl.uniform2f(loc.u_imageSize, imgW, imgH);
       gl.uniform2f(loc.u_viewCenter, viewRA, viewDec);
+      const scales = getViewPlaneScales();
+      gl.uniform2f(loc.u_viewScale, scales.scaleX, scales.scaleY);
+      syncViewRotationFromAladin();
+      gl.uniform1f(loc.u_viewRotation, viewRotation);
       gl.uniform1f(loc.u_fov, viewFov);
       gl.uniform1f(loc.u_opacity, opacity);
       gl.uniform1i(loc.u_stretch, stretch);
       gl.uniform1i(loc.u_showGrid, showGrid);
-      gl.uniform2f(loc.u_crosshair, crosshairRA, crosshairDec);
+      let crosshairSX = -999;
+      let crosshairSY = -999;
+      if (crosshairScreenX > -900) {
+        crosshairSX = crosshairScreenX;
+        crosshairSY = crosshairScreenY;
+      } else if (crosshairRA > -900) {
+        const chPos = celestialToScreen(
+          crosshairRA,
+          crosshairDec,
+          viewRA,
+          viewDec,
+          viewFov,
+          getViewAspect(),
+          scales,
+          viewRotation
+        );
+        if (chPos) {
+          crosshairSX = chPos.x;
+          crosshairSY = chPos.y;
+        }
+      }
+      gl.uniform2f(loc.u_crosshairScreen, crosshairSX, crosshairSY);
       gl.uniform2f(loc.u_resolution, canvas.width, canvas.height);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
 
     // --- Sync from model ---
+    function clearImageTexture() {
+      // Overlay was cleared (image_data emptied). Drop the cached pixels and
+      // upload a 1x1 fully transparent texel so a subsequent draw() renders
+      // nothing instead of the stale overlay at its old CRVAL.
+      rawData = null;
+      imgW = 1; imgH = 1;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, imgTex);
+      gl.texImage2D(
+        gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+        new Uint8Array([0, 0, 0, 0])
+      );
+    }
+
     function syncImage() {
       const bytes = model.get("image_data");
       const shape = model.get("image_shape");
-      if (!bytes || !shape || shape[0] === 0) return;
-      const len = bytes.byteLength || bytes.length;
-      if (len === 0) return;
+      const len = bytes ? (bytes.byteLength || bytes.length) : 0;
+      if (!bytes || !shape || shape[0] === 0 || len === 0) {
+        clearImageTexture();
+        return;
+      }
       imgH = shape[0]; imgW = shape[1];
       rawData = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + len));
       log("Image: " + imgW + "x" + imgH + ", " + rawData.length + " floats");
@@ -516,12 +631,16 @@ export async function render({ model, el }) {
       if (cp) crpix = [cp[0], cp[1]];
     }
 
+    function applyViewFromModel() {
+      viewRA = (model.get("view_ra") || 0) * DEG2RAD;
+      viewDec = (model.get("view_dec") || 0) * DEG2RAD;
+      viewFov = (model.get("view_fov") || 180) * DEG2RAD;
+    }
+
     function syncView() {
       // Don't overwrite local view state during or shortly after user interaction
       if (userInteracting) return;
-      viewRA = (model.get("view_ra")||0)*DEG2RAD;
-      viewDec = (model.get("view_dec")||0)*DEG2RAD;
-      viewFov = (model.get("view_fov")||180)*DEG2RAD;
+      applyViewFromModel();
     }
 
     function syncDisplay() {
@@ -530,6 +649,16 @@ export async function render({ model, el }) {
       opacity = model.get("opacity") ?? 1;
       stretch = stretchMap[model.get("stretch")] || 0;
       showGrid = model.get("show_grid") === false ? 0 : 1;
+    }
+
+    let drawScheduled = false;
+    function scheduleDraw() {
+      if (drawScheduled) return;
+      drawScheduled = true;
+      requestAnimationFrame(() => {
+        drawScheduled = false;
+        draw();
+      });
     }
 
     function syncAll() {
@@ -550,10 +679,44 @@ export async function render({ model, el }) {
     model.on("change:crpix", () => { syncWCS(); });
     model.on("change:vmin", () => { syncDisplay(); uploadImage(); });
     model.on("change:vmax", () => { syncDisplay(); uploadImage(); });
-    model.on("change:image_revision", () => { syncDisplay(); syncImage(); syncWCS(); syncView(); draw(); });
-    model.on("change:view_ra", () => { syncView(); draw(); });
-    model.on("change:view_dec", () => { syncView(); draw(); });
-    model.on("change:view_fov", () => { syncView(); draw(); });
+    model.on("change:image_revision", () => {
+      syncDisplay();
+      syncImage();
+      syncWCS();
+      // Authoritative slice load: WCS + image arrive in one Python batch.
+      // Do not syncAladin here — view_lock overlay swaps must not nudge HiPS FOV.
+      // View changes still flow through change:view_* → onPythonViewChange.
+      if (!model.get("overlay_view_lock")) {
+        applyViewFromModel();
+      }
+      measuredViewScales = null;
+      if (aladin) updateViewPlaneScales();
+      scheduleDraw();
+    });
+    function finishViewGesture() {
+      // After drag/zoom the Aladin WASM view is authoritative; then align HiPS + overlay.
+      if (aladin) syncViewFromAladin();
+      syncAladin();
+      draw();
+      if (model.get("overlay_view_lock")) {
+        const rev = model.get("view_gesture_revision") || 0;
+        model.set("view_gesture_revision", rev + 1);
+        model.save_changes();
+      }
+    }
+
+    function onPythonViewChange() {
+      // Python goto() / update_slice(center=) — not echo from an in-progress drag.
+      if (userInteracting) return;
+      applyViewFromModel();
+      measuredViewScales = null;
+      syncAladin();
+      // Defer draw so a batched update_slice cannot paint view before image/WCS sync.
+      scheduleDraw();
+    }
+    model.on("change:view_ra", onPythonViewChange);
+    model.on("change:view_dec", onPythonViewChange);
+    model.on("change:view_fov", onPythonViewChange);
     model.on("change:opacity", () => { syncDisplay(); draw(); });
     model.on("change:stretch", () => { syncDisplay(); draw(); });
     model.on("change:show_grid", () => { syncDisplay(); draw(); });
@@ -564,13 +727,47 @@ export async function render({ model, el }) {
     });
 
     // --- Aladin Lite: JS-side sync (no Python round-trip) ---
-    function syncAladin() {
+    function syncAladin(updateCenter = true) {
       if (!aladin) return;
-      const raDeg = ((viewRA / DEG2RAD) % 360 + 360) % 360;
-      const decDeg = viewDec / DEG2RAD;
+      viewFov = clampViewFov(viewFov);
       const fovDeg = viewFov / DEG2RAD;
-      aladin.gotoRaDec(raDeg, decDeg);
+      if (updateCenter) {
+        const raDeg = ((viewRA / DEG2RAD) % 360 + 360) % 360;
+        const decDeg = viewDec / DEG2RAD;
+        aladin.gotoRaDec(raDeg, decDeg);
+      }
       aladin.setFoV(fovDeg);
+      updateViewPlaneScales();
+    }
+
+    // Map browser client coords to Aladin view pixel space (CSS px).
+    function clientToAladinPixels(clientX, clientY) {
+      const rect = aladinDiv.getBoundingClientRect();
+      const view = aladin.view;
+      const w = view?.width ?? rect.width;
+      const h = view?.height ?? rect.height;
+      return {
+        x: (clientX - rect.left) * (w / rect.width),
+        y: (clientY - rect.top) * (h / rect.height),
+      };
+    }
+
+    // Pan using Aladin's WASM projection (matches HiPS background exactly).
+    function applyAladinPan(fromX, fromY, toX, toY) {
+      const wasm = aladin?.view?.wasm;
+      if (!wasm?.goFromTo) return false;
+      let { x: x1, y: y1 } = clientToAladinPixels(fromX, fromY);
+      let { x: x2, y: y2 } = clientToAladinPixels(toX, toY);
+      if (model.get("invert_horizontal_pan") === false) {
+        [x1, x2] = [x2, x1];
+      }
+      wasm.goFromTo(x1, y1, x2, y2);
+      aladin.view.updateCenter();
+      const [raDeg, decDeg] = aladin.getRaDec();
+      viewRA = raDeg * DEG2RAD;
+      viewDec = decDeg * DEG2RAD;
+      syncViewRotationFromAladin();
+      return true;
     }
 
     // Initialize Aladin if background survey is set
@@ -640,7 +837,7 @@ export async function render({ model, el }) {
       if (hasData) {
         log("Data arrived after " + _pollCount + " poll(s)");
         requestAnimationFrame(draw);
-        syncAladin();
+        // Do not syncAladin() — preserve user pan/zoom; image_revision already drew.
         initialRA = viewRA; initialDec = viewDec; initialFov = viewFov;
         return;
       }
@@ -661,21 +858,32 @@ export async function render({ model, el }) {
     let mouseDownX = 0, mouseDownY = 0, didDrag = false;
     canvas.style.cursor = "grab";
 
-    // Helper: screen coords → (RA, Dec) in radians
-    function screenToRaDec(clientX, clientY) {
+    // Helper: screen coords → normalized [-1,1] with y north-up
+    function clientToScreen(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
-      const sx = ((clientX-rect.left)/rect.width)*2-1;
-      const sy = -(((clientY-rect.top)/rect.height)*2-1);
-      const aspect = canvas.width/canvas.height;
-      const sc = Math.tan(viewFov*0.5);
-      const lV = -sx*sc*aspect, mV = sy*sc;
-      const r = Math.sqrt(lV*lV+mV*mV);
-      if (r < 1e-10) return { ra: viewRA, dec: viewDec };
-      const c = Math.atan(r), snc=Math.sin(c), csc=Math.cos(c);
-      const sd=Math.sin(viewDec), cd=Math.cos(viewDec);
-      const dec2 = Math.asin(csc*sd + mV*snc*cd/r);
-      const ra2 = viewRA + Math.atan2(lV*snc, r*cd*csc - mV*sd*snc);
-      return { ra: ra2, dec: dec2 };
+      return {
+        x: ((clientX - rect.left) / rect.width) * 2 - 1,
+        y: -(((clientY - rect.top) / rect.height) * 2 - 1),
+      };
+    }
+
+    // Helper: screen coords → (RA, Dec) in radians; null outside SIN disk
+    function screenToRaDec(clientX, clientY) {
+      const { x, y } = clientToScreen(clientX, clientY);
+      return screenToCelestial(
+        x, y, viewRA, viewDec, viewFov, getViewAspect(), getViewPlaneScales(), viewRotation
+      );
+    }
+
+    // HiPS-aligned sky coords when Aladin is active; else WebGL SIN.
+    function clientSkyCoord(clientX, clientY) {
+      return skyCoordFromClient(
+        clientX,
+        clientY,
+        aladin,
+        clientToAladinPixels,
+        screenToRaDec
+      );
     }
 
     canvas.addEventListener("mousedown", e => {
@@ -694,12 +902,18 @@ export async function render({ model, el }) {
         boxOverlay.style.height = "0";
         boxOverlay.style.display = "block";
       } else {
-        dragging = true;
+        pendingPan = true;
         lastX = e.clientX; lastY = e.clientY;
         canvas.style.cursor = "grabbing";
       }
     });
     window.addEventListener("mousemove", e => {
+      if (pendingPan && !dragging) {
+        const dist = Math.sqrt((e.clientX - mouseDownX) ** 2 + (e.clientY - mouseDownY) ** 2);
+        if (dist < 3) return;
+        pendingPan = false;
+        dragging = true;
+      }
       if (boxing) {
         // Box zoom: draw selection rectangle
         const rect = container.getBoundingClientRect();
@@ -717,35 +931,44 @@ export async function render({ model, el }) {
       if (!dragging) {
         // Hover readout
         const rect = canvas.getBoundingClientRect();
-        const sx = ((e.clientX-rect.left)/rect.width)*2-1;
-        const sy = -(((e.clientY-rect.top)/rect.height)*2-1);
-        const aspect = canvas.width/canvas.height;
-        const sc = Math.tan(viewFov*0.5);
-        const lV = -sx*sc*aspect, mV = sy*sc;
-        const r = Math.sqrt(lV*lV+mV*mV);
-        if (r < 1e-10) {
-          const rd = ((viewRA/DEG2RAD)%360+360)%360;
-          readout.textContent = fmtRA(rd) + "  " + fmtDec(viewDec/DEG2RAD);
+        const sx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const sy = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+        const aspect = getViewAspect();
+        const coord = screenToCelestial(
+          sx, sy, viewRA, viewDec, viewFov, aspect, getViewPlaneScales(), viewRotation
+        );
+        if (coord) {
+          const rd = ((coord.ra / DEG2RAD) % 360 + 360) % 360;
+          readout.textContent = fmtRA(rd) + "  " + fmtDec(coord.dec / DEG2RAD);
         } else {
-          const c = Math.atan(r), snc=Math.sin(c), csc=Math.cos(c);
-          const sd=Math.sin(viewDec), cd=Math.cos(viewDec);
-          const dec2 = Math.asin(csc*sd + mV*snc*cd/r);
-          const ra2 = viewRA + Math.atan2(lV*snc, r*cd*csc - mV*sd*snc);
-          const rd = ((ra2/DEG2RAD)%360+360)%360;
-          readout.textContent = fmtRA(rd) + "  " + fmtDec(dec2/DEG2RAD);
+          readout.textContent = "";
         }
         return;
       }
-      const dx = (e.clientX-lastX)/canvas.clientWidth*viewFov;
-      const dy = (e.clientY-lastY)/canvas.clientHeight*viewFov;
-      const aspect = canvas.width/canvas.height;
-      const cosDec = Math.max(Math.cos(viewDec), 0.01);
-      const panH = model.get("invert_horizontal_pan") === false ? 1 : -1;
-      viewRA -= panH * dx * aspect / cosDec;
-      viewDec = Math.max(-Math.PI/2+0.001, Math.min(Math.PI/2-0.001, viewDec+dy));
-      lastX = e.clientX; lastY = e.clientY;
+      const aspect = getViewAspect();
+      const scales = getViewPlaneScales();
+      const usedAladinPan = applyAladinPan(lastX, lastY, e.clientX, e.clientY);
+      if (!usedAladinPan) {
+        const s1 = clientToScreen(lastX, lastY);
+        const s2 = clientToScreen(e.clientX, e.clientY);
+        const panned = panViewByScreenDrag(
+          s1.x, s1.y, s2.x, s2.y,
+          viewRA, viewDec, viewFov, aspect,
+          {
+            invertHorizontalPan: model.get("invert_horizontal_pan") !== false,
+            scales,
+            rotationRad: viewRotation,
+          }
+        );
+        if (panned) {
+          viewRA = panned.viewRA;
+          viewDec = panned.viewDec;
+        }
+      }
+      if (aladin) updateViewPlaneScales();
+      lastX = e.clientX;
+      lastY = e.clientY;
       didDrag = true;
-      syncAladin();
       requestAnimationFrame(draw);
     });
     window.addEventListener("mouseup", e => {
@@ -771,25 +994,28 @@ export async function render({ model, el }) {
           rect.left + (boxStartX + curX) / 2,
           rect.top + (boxStartY + curY) / 2
         );
+        if (!center) return;
         viewRA = center.ra;
         viewDec = center.dec;
 
-        // New FOV proportional to selection size
+        // New FOV: SIN-correct scaling from selection fraction
         const selFrac = Math.max(Math.abs(curX - boxStartX) / rect.width,
                                   Math.abs(curY - boxStartY) / rect.height);
-        viewFov = viewFov * selFrac;
-        viewFov = Math.max(0.001 * DEG2RAD, Math.min(Math.PI, viewFov));
+        const half = viewFov * 0.5;
+        viewFov = 2 * Math.asin(Math.min(1, selFrac * Math.sin(half)));
+        viewFov = clampViewFov(viewFov);
 
         model.set("view_ra", viewRA/DEG2RAD);
         model.set("view_dec", viewDec/DEG2RAD);
         model.set("view_fov", viewFov/DEG2RAD);
         model.save_changes();
-        syncAladin();
-        draw();
+        finishViewGesture();
         return;
       }
-      if (dragging) {
+      if (dragging || pendingPan) {
+        const wasDragging = dragging;
         dragging = false;
+        pendingPan = false;
         canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
         // Keep userInteracting true to absorb model echo, then release
         interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
@@ -797,10 +1023,34 @@ export async function render({ model, el }) {
         const dist = Math.sqrt((e.clientX-mouseDownX)**2 + (e.clientY-mouseDownY)**2);
         if (dist < 3) {
           // Click — compute celestial coords and send to Python
-          const coord = screenToRaDec(e.clientX, e.clientY);
+          const coord = clientSkyCoord(e.clientX, e.clientY);
+          if (!coord) return;
           const raDeg = ((coord.ra / DEG2RAD) % 360 + 360) % 360;
           const decDeg = coord.dec / DEG2RAD;
           model.set("clicked_coord", [raDeg, decDeg]);
+
+          // Diagnostic: read the SAME click pixel through both projections so
+          // Python can detect overlay (WebGL SIN) vs HiPS (Aladin) disagreement.
+          try {
+            let hipsRa = NaN, hipsDec = NaN;
+            if (aladin?.pix2world) {
+              const px = clientToAladinPixels(e.clientX, e.clientY);
+              const w = aladin.pix2world(px.x, px.y);
+              if (Array.isArray(w) && isFinite(w[0]) && isFinite(w[1])) {
+                hipsRa = ((w[0] % 360) + 360) % 360;
+                hipsDec = w[1];
+              }
+            }
+            let webglRa = NaN, webglDec = NaN;
+            const wc = screenToRaDec(e.clientX, e.clientY);
+            if (wc) {
+              webglRa = ((wc.ra / DEG2RAD) % 360 + 360) % 360;
+              webglDec = wc.dec / DEG2RAD;
+            }
+            model.set("clicked_coord_debug", [hipsRa, hipsDec, webglRa, webglDec]);
+          } catch (err) {
+            model.set("clicked_coord_debug", [NaN, NaN, NaN, NaN]);
+          }
 
           // Compute (l, m) direction cosines from phase center
           const dra = coord.ra - crval[0];
@@ -813,7 +1063,10 @@ export async function render({ model, el }) {
           model.set("click_tick", (prevTick == null ? 0 : prevTick) + 1);
           model.save_changes();
 
-          // Set crosshair position
+          // Fixed screen-space crosshair at click (HiPS-aligned coords above).
+          const screenPos = clientToScreen(e.clientX, e.clientY);
+          crosshairScreenX = screenPos.x;
+          crosshairScreenY = screenPos.y;
           crosshairRA = coord.ra;
           crosshairDec = coord.dec;
           requestAnimationFrame(draw);
@@ -821,7 +1074,7 @@ export async function render({ model, el }) {
           model.set("view_ra", viewRA/DEG2RAD);
           model.set("view_dec", viewDec/DEG2RAD);
           model.save_changes();
-          syncAladin();
+          finishViewGesture();
         }
       }
     });
@@ -830,11 +1083,15 @@ export async function render({ model, el }) {
       userInteracting = true;
       if (interactionTimer) clearTimeout(interactionTimer);
       viewFov *= e.deltaY > 0 ? 1.1 : 1/1.1;
-      viewFov = Math.max(0.001*DEG2RAD, Math.min(Math.PI, viewFov));
+      viewFov = clampViewFov(viewFov);
       model.set("view_fov", viewFov/DEG2RAD);
       model.save_changes();
-      syncAladin();
-      requestAnimationFrame(draw);
+      if (aladin) {
+        aladin.setFoV(viewFov / DEG2RAD);
+        requestAnimationFrame(finishViewGesture);
+      } else {
+        requestAnimationFrame(draw);
+      }
       interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
     }, { passive: false });
 
@@ -843,6 +1100,7 @@ export async function render({ model, el }) {
       const r = container.getBoundingClientRect();
       const d = window.devicePixelRatio||1;
       canvas.width = r.width*d; canvas.height = r.height*d;
+      updateViewPlaneScales();
       draw();
     });
     ro.observe(container);

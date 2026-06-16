@@ -25,6 +25,128 @@ def make_reference_wcs() -> WCS:
     return w
 
 
+def _view_fov_scales(fov_deg: float, aspect: float) -> tuple[float, float]:
+    """Per-axis sin(half-fov) scales matching Aladin Lite and ``projection.js``."""
+    fov_rad = np.deg2rad(fov_deg)
+    if aspect >= 1.0:
+        fov_w = fov_rad
+        fov_h = fov_rad / aspect
+    else:
+        fov_h = fov_rad
+        fov_w = fov_rad * aspect
+    return float(np.sin(fov_w * 0.5)), float(np.sin(fov_h * 0.5))
+
+
+def _sin_view_lm_from_screen(
+    x: float,
+    y: float,
+    fov_deg: float,
+    aspect: float,
+) -> tuple[float, float] | None:
+    """View-plane (l, m) from normalized screen coords (matches ``projection.js``)."""
+    scale_x, scale_y = _view_fov_scales(fov_deg, aspect)
+    l_view = -x * scale_x
+    m_view = y * scale_y
+    if np.hypot(l_view, m_view) > 1.0:
+        return None
+    return l_view, m_view
+
+
+def _sin_view_lm_to_world_deg(
+    l_view: float,
+    m_view: float,
+    view_ra_deg: float,
+    view_dec_deg: float,
+) -> tuple[float, float] | None:
+    """Inverse SIN view plane → (RA, Dec) degrees (matches ``lmToCelestial``)."""
+    r = float(np.hypot(l_view, m_view))
+    if r > 1.0:
+        return None
+
+    ra0 = np.deg2rad(view_ra_deg)
+    dec0 = np.deg2rad(view_dec_deg)
+
+    if r == 0.0:
+        return view_ra_deg, view_dec_deg
+
+    cosc = float(np.sqrt(max(0.0, 1.0 - r * r)))
+    sinc = r
+    sin_dec0 = np.sin(dec0)
+    cos_dec0 = np.cos(dec0)
+    dec_rad = float(
+        np.arcsin(cosc * sin_dec0 + (m_view * cos_dec0 * sinc) / r)
+    )
+    ra_rad = float(
+        ra0
+        + np.arctan2(
+            l_view * sinc,
+            r * cos_dec0 * cosc - m_view * sin_dec0 * sinc,
+        )
+    )
+    return float(np.rad2deg(ra_rad)), float(np.rad2deg(dec_rad))
+
+
+def generate_view_vectors() -> list[dict]:
+    """Generate SIN view screen ↔ sky vectors for JS ``screenToCelestial`` tests."""
+    view_ra = 180.0
+    view_dec = 45.0
+    screen_points = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 0.0),
+        (0.0, 1.0),
+        (0.0, -1.0),
+        (0.5, 0.5),
+        (-0.75, 0.25),
+        (0.25, -0.9),
+    ]
+    outside_points = []  # filled per (fov, aspect) below
+
+    vectors: list[dict] = []
+    for fov_deg in (30.0, 60.0):
+        for aspect in (1.0, 1.5):
+            scale_x, scale_y = _view_fov_scales(fov_deg, aspect)
+            x_out = 1.05 / scale_x
+            y_out = 1.05 / scale_y
+            outside_points = [(x_out, 0.0), (0.0, y_out), (x_out, y_out)]
+
+            for x, y in screen_points:
+                lm = _sin_view_lm_from_screen(x, y, fov_deg, aspect)
+                if lm is None:
+                    continue
+                l_view, m_view = lm
+                ra_deg, dec_deg = _sin_view_lm_to_world_deg(
+                    l_view, m_view, view_ra, view_dec
+                )
+                vectors.append({
+                    "view_ra_deg": view_ra,
+                    "view_dec_deg": view_dec,
+                    "fov_deg": fov_deg,
+                    "aspect": aspect,
+                    "x": float(x),
+                    "y": float(y),
+                    "ra_deg": ra_deg,
+                    "dec_deg": dec_deg,
+                    "outside_disk": False,
+                })
+
+            for x, y in outside_points:
+                lm = _sin_view_lm_from_screen(x, y, fov_deg, aspect)
+                if lm is not None:
+                    continue
+                vectors.append({
+                    "view_ra_deg": view_ra,
+                    "view_dec_deg": view_dec,
+                    "fov_deg": fov_deg,
+                    "aspect": aspect,
+                    "x": float(x),
+                    "y": float(y),
+                    "outside_disk": True,
+                })
+
+    return vectors
+
+
 def generate_vectors() -> dict:
     """Generate test vectors covering critical coordinate alignment cases."""
     wcs = make_reference_wcs()
@@ -144,6 +266,8 @@ def generate_vectors() -> dict:
                 "roundtrip_py": float(pix_back[1]) + 1,
             })
 
+    vectors["view"] = generate_view_vectors()
+
     return vectors
 
 
@@ -152,8 +276,10 @@ def main():
     out_path = Path(__file__).parent / "fixtures" / "projection_vectors.json"
     out_path.parent.mkdir(exist_ok=True)
     out_path.write_text(json.dumps(vectors, indent=2))
-    print(f"Wrote {len(vectors['forward'])} forward, {len(vectors['inverse'])} inverse, "
-          f"{len(vectors['pixel'])} pixel vectors to {out_path}")
+    print(
+        f"Wrote {len(vectors['forward'])} forward, {len(vectors['inverse'])} inverse, "
+        f"{len(vectors['pixel'])} pixel, {len(vectors['view'])} view vectors to {out_path}"
+    )
 
 
 if __name__ == "__main__":

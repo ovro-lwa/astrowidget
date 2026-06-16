@@ -27,9 +27,10 @@ precision highp float;
 uniform sampler2D u_image;
 uniform sampler2D u_cmap;
 uniform vec2 u_crval, u_cdelt, u_crpix, u_imageSize, u_viewCenter, u_resolution;
-uniform float u_fov, u_opacity;
+uniform vec2 u_viewScale;
+uniform float u_viewRotation, u_fov, u_opacity;
 uniform int u_stretch, u_showGrid;
-uniform vec2 u_crosshair;  // clicked position (RA, Dec) in radians; (-999,-999) = none
+uniform vec2 u_crosshairScreen;  // NDC; x < -900 = hidden
 out vec4 fragColor;
 
 // Auto-scale grid interval based on FOV
@@ -44,12 +45,35 @@ float gridInterval(float fovDeg) {
 
 void main() {
     vec2 screen = (gl_FragCoord.xy / u_resolution) * 2.0 - 1.0;
-    float aspect = u_resolution.x / u_resolution.y;
-    float scale = tan(u_fov * 0.5);
-    float lV = -screen.x * scale * aspect;
-    float mV = screen.y * scale;
+
+    // Screen-space crosshair (works with HiPS-only or overlay)
+    if (u_crosshairScreen.x > -900.0) {
+        float dx = abs(screen.x - u_crosshairScreen.x);
+        float dy = abs(screen.y - u_crosshairScreen.y);
+        float crossArm = 0.035;
+        float crossHair = 0.003;
+        bool onH = dy < crossHair && dx < crossArm;
+        bool onV = dx < crossHair && dy < crossArm;
+        if (onH || onV) {
+            fragColor = vec4(0.0, 1.0, 1.0, 1.0);
+            return;
+        }
+    }
+
+    float scaleX = u_viewScale.x;
+    float scaleY = u_viewScale.y;
+    float l0 = -screen.x * scaleX;
+    float m0 = screen.y * scaleY;
+    float cr = cos(u_viewRotation);
+    float sr = sin(u_viewRotation);
+    float lV = l0 * cr + m0 * sr;
+    float mV = -l0 * sr + m0 * cr;
     float r = sqrt(lV*lV + mV*mV);
-    float c = atan(r);
+    if (r > 1.0) {
+        fragColor = vec4(0, 0, 0, 0);
+        return;
+    }
+    float c = asin(clamp(r, 0.0, 1.0));
     float sc = sin(c), cc = cos(c);
     float sd0 = sin(u_viewCenter.y), cd0 = cos(u_viewCenter.y);
     float dec, ra;
@@ -88,11 +112,7 @@ void main() {
         if (decRem < lineWidth || decRem > interval - lineWidth) gridAlpha = 0.35;
     }
 
-    // --- Horizon circle (SIN projection boundary) ---
-    float horizonAlpha = 0.0;
-    if (abs(cosAng) < 0.008) horizonAlpha = 0.5;
-
-    // Outside the visible hemisphere
+    // Outside the visible hemisphere (image SIN tangent plane)
     if (cosAng <= 0.0) {
         // Show grid even outside image (on the "sky" background)
         if (gridAlpha > 0.0) {
@@ -105,15 +125,15 @@ void main() {
 
     float l = cdP * sin(dra);
     float m = sdP*cd0P - cdP*sd0P*cdra;
+    // px/py are 0-based WCS axis 1/2; texture is (width=n_m, height=n_l) from numpy (l, m).
     float px = l/u_cdelt.x + u_crpix.x - 1.0;
     float py = m/u_cdelt.y + u_crpix.y - 1.0;
-    vec2 uv = vec2(px/u_imageSize.x, py/u_imageSize.y);
+    vec2 uv = vec2(py/u_imageSize.x, px/u_imageSize.y);
 
     // Outside image bounds
     if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) {
-        if (gridAlpha > 0.0 || horizonAlpha > 0.0) {
-            float a = max(gridAlpha, horizonAlpha);
-            fragColor = vec4(1.0, 1.0, 1.0, a * 0.5);
+        if (gridAlpha > 0.0) {
+            fragColor = vec4(1.0, 1.0, 1.0, gridAlpha * 0.5);
         } else {
             fragColor = vec4(0,0,0,0);
         }
@@ -134,28 +154,6 @@ void main() {
     // Overlay grid lines on top of image
     if (gridAlpha > 0.0) {
         fragColor.rgb = mix(fragColor.rgb, vec3(1.0), gridAlpha);
-    }
-    // Overlay horizon circle
-    if (horizonAlpha > 0.0) {
-        fragColor.rgb = mix(fragColor.rgb, vec3(0.0, 1.0, 0.5), horizonAlpha);
-    }
-    // Crosshair at clicked position
-    if (u_crosshair.x > -900.0) {
-        float angDist = acos(clamp(
-            sin(dec)*sin(u_crosshair.y) + cos(dec)*cos(u_crosshair.y)*cos(ra - u_crosshair.x),
-            -1.0, 1.0));
-        float crossSize = fovDeg * 0.015 * 0.0174533;  // size in radians
-        float crossWidth = fovDeg * 0.002 * 0.0174533;
-        // Draw a "+" shape
-        float dra2 = abs(ra - u_crosshair.x);
-        if (dra2 > 3.14159) dra2 = 6.28318 - dra2;
-        float ddec2 = abs(dec - u_crosshair.y);
-        bool onH = ddec2 < crossWidth && dra2*cos(u_crosshair.y) < crossSize;
-        bool onV = dra2*cos(u_crosshair.y) < crossWidth && ddec2 < crossSize;
-        if (onH || onV) {
-            fragColor.rgb = vec3(0.0, 1.0, 1.0);  // cyan crosshair
-            fragColor.a = 1.0;
-        }
     }
     // Premultiply alpha for correct compositing with background
     fragColor.rgb *= fragColor.a;
@@ -357,11 +355,13 @@ async function oe({ model: e, el: u }) {
       "u_crpix",
       "u_imageSize",
       "u_viewCenter",
+      "u_viewScale",
+      "u_viewRotation",
       "u_fov",
       "u_opacity",
       "u_stretch",
       "u_showGrid",
-      "u_crosshair",
+      "u_crosshairScreen",
       "u_resolution"
     ].forEach(
       (o) => y[o] = t.getUniformLocation(X, o)

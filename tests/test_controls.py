@@ -139,6 +139,19 @@ class TestSliceTraitlets:
         w.set_image(data, wcs)
         assert w.image_revision == 1
 
+    def test_clear_image_empties_overlay(self):
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        data = np.ones((8, 8), dtype=np.float32)
+        wcs = _make_sin_wcs()
+        w.set_image(data, wcs)
+        revision = w.image_revision
+        w.clear_image()
+        assert w.image_data == b""
+        assert w.image_shape == (0, 0)
+        assert w.image_revision == revision + 1
+
 
 class TestDisplayOptions:
     def test_colormap_options(self):
@@ -190,3 +203,76 @@ class TestAutoScale:
         # Different slice may produce different auto-scale
         # (at minimum, set_image was called which runs auto_scale)
         assert w.vmin is not None
+
+
+class TestViewLock:
+    def test_reproject_at_view_preserves_view_ra(self):
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        ds = _make_dataset()
+        w.set_dataset(ds)
+        w.overlay_view_lock = True
+        w.view_ra = 210.0
+        w.view_dec = 30.0
+        revision_before = w.image_revision
+
+        w.reproject_at_view()
+
+        assert w.image_revision == revision_before + 1
+        assert w.view_ra == pytest.approx(210.0)
+        assert w.view_dec == pytest.approx(30.0)
+        assert w.crval[0] == pytest.approx(210.0)
+        assert w.crval[1] == pytest.approx(30.0)
+
+    def test_reproject_at_view_noop_without_view_lock(self):
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        ds = _make_dataset()
+        w.set_dataset(ds)
+        revision_before = w.image_revision
+
+        w.reproject_at_view()
+
+        assert w.image_revision == revision_before
+
+    def test_update_slice_view_lock_uses_view_center(self):
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        ds = _make_dataset()
+        w.set_dataset(ds)
+        w.view_ra = 195.0
+        w.view_dec = 35.0
+        revision_before = w.image_revision
+
+        w.update_slice(1, 2, view_lock=True)
+
+        assert w.time_idx == 1
+        assert w.freq_idx == 2
+        assert w.view_ra == pytest.approx(195.0)
+        assert w.view_dec == pytest.approx(35.0)
+        assert w.crval[0] == pytest.approx(195.0)
+        assert w.crval[1] == pytest.approx(35.0)
+        assert w.image_revision == revision_before + 1
+
+    def test_update_slice_explicit_center_overrides_view_lock(self):
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+
+        from astrowidget import SkyWidget
+
+        w = SkyWidget()
+        ds = _make_dataset()
+        w.set_dataset(ds)
+        w.view_ra = 195.0
+        w.view_dec = 35.0
+        catalog = SkyCoord(ra=180.0 * u.deg, dec=45.0 * u.deg, frame="icrs")
+
+        w.update_slice(1, 2, center=catalog, view_lock=True)
+
+        assert w.view_ra == pytest.approx(180.0)
+        assert w.view_dec == pytest.approx(45.0)
+        assert w.crval[0] == pytest.approx(180.0)
+        assert w.crval[1] == pytest.approx(45.0)

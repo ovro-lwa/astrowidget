@@ -119,8 +119,8 @@ void main() {
     float px = l / u_cdelt.x + u_crpix.x - 1.0;
     float py = m / u_cdelt.y + u_crpix.y - 1.0;
 
-    // Texture UV (0-1 range)
-    vec2 uv = vec2(px / u_imageSize.x, py / u_imageSize.y);
+    // Texture UV: u_imageSize = (n_m, n_l); axis 2 → u, axis 1 → v
+    vec2 uv = vec2(py / u_imageSize.x, px / u_imageSize.y);
 
     // Bounds check
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
