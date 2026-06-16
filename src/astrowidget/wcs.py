@@ -356,21 +356,4 @@ def reproject_for_shader_display(
         mode="constant",
         cval=np.nan,
     )
-
-    # SIN (orthographic) is two-to-one over the sphere: a world point on the far
-    # hemisphere of the source tangent projects to the same intermediate (l, m)
-    # as its near-side mirror, so all_world2pix returns an in-bounds pixel and we
-    # would sample real data reflected across the pole (ghost overlay near, e.g.,
-    # the south celestial pole for a northern OVRO zenith snapshot). Reject any
-    # output sample whose world point is >= 90 deg from the source tangent.
-    src_crval = wcs_src.celestial.wcs.crval
-    ra0 = np.deg2rad(float(src_crval[0]))
-    dec0 = np.deg2rad(float(src_crval[1]))
-    ra_rad = np.deg2rad(world_ra)
-    dec_rad = np.deg2rad(world_dec)
-    cos_sep = np.sin(dec_rad) * np.sin(dec0) + np.cos(dec_rad) * np.cos(dec0) * np.cos(
-        ra_rad - ra0
-    )
-    out[~(cos_sep > 0.0)] = np.nan
-
     return out.astype(np.float32, copy=False), wcs_out

@@ -76,10 +76,9 @@ class PreloadedCube:
     def image(self, time_idx: int = 0, freq_idx: int = 0) -> np.ndarray:
         """Get a 2D image slice in ``(l, m)`` order matching the display WCS.
 
-        The WebGL texture is uploaded as width ``n_m`` × height ``n_l`` (numpy
-        columns = axis 2, rows = axis 1). Do not transpose here; transposing
-        ``(l, m)`` to ``(m, l)`` mis-registers the sky overlay when ``CRVAL``
-        changes per time step.
+        The WebGL shader maps WCS axis 1 → image column 0 and axis 2 → column 1.
+        Do not transpose here; transposing ``(l, m)`` to ``(m, l)`` mis-registers the
+        sky overlay when ``CRVAL`` changes per time step.
         """
         return self._load_slice(time_idx, freq_idx)
 
