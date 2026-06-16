@@ -61,13 +61,12 @@ wcs = get_wcs(ds, var="SKY", time_idx=0)
 
 Returns `astropy.wcs.WCS`.
 
-Searches four locations for the WCS header string:
-1. `ds["wcs_header_str"]` with a `time` dimension (per-time header at `time_idx`)
-2. `ds[var].attrs["fits_wcs_header"]`
-3. `ds.attrs["fits_wcs_header"]`
-4. scalar `ds["wcs_header_str"]` (0-D variable, bytes → string)
-
-Raises `ValueError` if no WCS header is found.
+Search behavior:
+1. If `ds["wcs_header_str"]` has a `time` dimension, `get_wcs` uses the per-time header at `time_idx` (**required**; no static fallback if that entry is empty).
+2. Otherwise, it falls back to static metadata in this order:
+   - `ds[var].attrs["fits_wcs_header"]`
+   - `ds.attrs["fits_wcs_header"]`
+   - scalar `ds["wcs_header_str"]` (0-D variable; bytes → string)
 
 ## PreloadedCube
 

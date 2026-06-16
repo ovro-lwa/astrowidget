@@ -545,7 +545,6 @@ export async function render({ model, el }) {
 
     function draw() {
       if (aladin) {
-        syncViewRotationFromAladin();
         updateViewPlaneScales();
       }
 

@@ -43,12 +43,12 @@ ds = open_dataset(zarr.MemoryStore())
 
 ## WCS Extraction
 
-`get_wcs(ds, var="SKY", time_idx=0)` searches for the FITS WCS header string in four locations (in order):
+`get_wcs(ds, var="SKY", time_idx=0)` extracts the FITS WCS header string as follows:
 
-1. **Per-time variable**: `ds["wcs_header_str"][time_idx]` when `wcs_header_str` has a `time` dimension
-2. **Variable attrs**: `ds["SKY"].attrs["fits_wcs_header"]`
-3. **Dataset attrs**: `ds.attrs["fits_wcs_header"]`
-4. **0-D variable**: `ds["wcs_header_str"]` (bytes → string → Header)
+1. If `ds["wcs_header_str"]` has a `time` dimension, use `ds["wcs_header_str"][time_idx]`. If that selected entry is empty or missing, `get_wcs` raises `ValueError` (no static-attribute fallback).
+2. Otherwise, check **variable attrs**: `ds["SKY"].attrs["fits_wcs_header"]`
+3. Then check **dataset attrs**: `ds.attrs["fits_wcs_header"]`
+4. Finally, check the **0-D variable**: `ds["wcs_header_str"]` (bytes → string → Header)
 
 This redundant storage pattern is inherited from ovro-lwa-portal's FITS→zarr conversion, which writes WCS header metadata redundantly to survive xarray merge operations.
 
