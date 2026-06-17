@@ -1,6 +1,108 @@
-const i = Math.PI / 180;
-function Ht() {
-  const e = [
+const h = Math.PI / 180;
+function Yt(t, c) {
+  let o, i;
+  return c >= 1 ? (o = t, i = t / c) : (i = t, o = t * c), {
+    fovWidth: o,
+    fovHeight: i,
+    scaleX: Math.sin(o * 0.5),
+    scaleY: Math.sin(i * 0.5)
+  };
+}
+function _e(t) {
+  let c = 1e-3 * h, o = Math.PI;
+  for (let i = 0; i < 40; i++) {
+    const a = (c + o) * 0.5, { scaleX: r, scaleY: f } = Yt(a, t);
+    Math.hypot(r, f) <= 1 + 1e-9 ? c = a : o = a;
+  }
+  return c;
+}
+function ve(t, c, o, i, a, r = 0) {
+  if (!(t != null && t.pix2world) || c < 2 || o < 2) return null;
+  if (i == null || a == null) {
+    const [e, F] = t.getRaDec();
+    i = e * h, a = F * h;
+  }
+  const f = c * 0.5, s = o * 0.5, d = Math.max(4, c * 0.02), g = Math.max(4, o * 0.02), v = Math.cos(r), E = Math.sin(r);
+  function D(e, F) {
+    const [q, I] = t.pix2world(e, F), { l: y, m: Q } = le(q * h, I * h, i, a);
+    return r === 0 ? { l0: y, m0: Q } : { l0: y * v - Q * E, m0: y * E + Q * v };
+  }
+  const C = D(f + d, s), V = D(f - d, s), z = D(f, s - g), H = D(f, s + g), b = 4 * d / c, W = 4 * g / o, x = Math.abs(C.l0 - V.l0) / b, P = Math.abs(z.m0 - H.m0) / W;
+  return !Number.isFinite(x) || !Number.isFinite(P) || x < 1e-15 || P < 1e-15 ? null : { scaleX: x, scaleY: P };
+}
+function se(t, c, o) {
+  return (o == null ? void 0 : o.scaleX) > 0 && (o == null ? void 0 : o.scaleY) > 0 ? o : Yt(t, c);
+}
+function xe(t, c, o, i, a = 0) {
+  const r = -t * o, f = c * i;
+  if (a === 0) return { l: r, m: f };
+  const s = Math.cos(a), d = Math.sin(a);
+  return {
+    l: r * s + f * d,
+    m: -r * d + f * s
+  };
+}
+function ye(t, c, o, i, a = 0) {
+  let r = t, f = c;
+  if (a !== 0) {
+    const s = Math.cos(a), d = Math.sin(a);
+    r = t * s - c * d, f = t * d + c * s;
+  }
+  return { x: -r / o, y: f / i };
+}
+function le(t, c, o, i) {
+  const a = t - o, r = Math.sin(c), f = Math.cos(c), s = Math.sin(i), d = Math.cos(i), g = Math.cos(a), v = r * s + f * d * g, E = f * Math.sin(a), D = r * d - f * s * g;
+  return { l: E, m: D, visible: v > 0 };
+}
+function we(t, c, o, i) {
+  const a = Math.sqrt(t * t + c * c);
+  if (a > 1) return null;
+  const r = Math.sin(i), f = Math.cos(i);
+  let s, d;
+  if (a === 0)
+    s = i, d = o;
+  else {
+    const g = Math.sqrt(1 - a * a);
+    s = Math.asin(g * r + c * f / a * a);
+    const v = a;
+    s = Math.asin(g * r + c * f * v / a), d = o + Math.atan2(t * v, a * f * g - c * r * v);
+  }
+  return { ra: d, dec: s };
+}
+function xt(t, c, o, i, a, r, f = null, s = 0) {
+  const { scaleX: d, scaleY: g } = se(a, r, f), { l: v, m: E } = xe(t, c, d, g, s);
+  return Math.hypot(v, E) > 1 ? null : we(v, E, o, i);
+}
+function Te(t, c, o, i, a, r, f = null, s = 0) {
+  const { l: d, m: g, visible: v } = le(t, c, o, i);
+  if (!v) return null;
+  const { scaleX: E, scaleY: D } = se(a, r, f);
+  if (E < 1e-15 || D < 1e-15) return { x: 0, y: 0 };
+  const { x: C, y: V } = ye(d, g, E, D, s);
+  return Math.hypot(d, g) > 1 + 1e-12 ? null : { x: C, y: V };
+}
+function Ee(t, c, o, i, a, r, f, s, d = {}) {
+  const g = d.scales ?? null, v = d.rotationRad ?? 0, E = xt(t, c, a, r, f, s, g, v), D = xt(o, i, a, r, f, s, g, v);
+  if (!E || !D) return null;
+  let C = E.ra - D.ra;
+  C > Math.PI && (C -= 2 * Math.PI), C < -Math.PI && (C += 2 * Math.PI);
+  const V = d.invertHorizontalPan === !1 ? 1 : -1, z = -Math.PI / 2 + 1e-3, H = Math.PI / 2 - 1e-3;
+  return {
+    viewRA: a + V * C,
+    viewDec: Math.max(z, Math.min(H, r + E.dec - D.dec))
+  };
+}
+function De(t, c, o, i, a) {
+  if (o != null && o.pix2world) {
+    const { x: r, y: f } = i(t, c), s = o.pix2world(r, f);
+    if (!s || s.length < 2) return null;
+    const d = s[0], g = s[1];
+    return !Number.isFinite(d) || !Number.isFinite(g) ? null : { ra: d * h, dec: g * h };
+  }
+  return a(t, c);
+}
+function Re() {
+  const t = [
     [0, 0, 0, 4],
     [32, 31, 2, 67],
     [64, 84, 3, 104],
@@ -10,19 +112,19 @@ function Ht() {
     [192, 250, 150, 6],
     [224, 253, 205, 41],
     [255, 252, 255, 164]
-  ], u = new Uint8Array(256 * 4);
-  for (let a = 0; a < 256; a++) {
-    let n = 0;
-    for (let s = 0; s < e.length - 1; s++) a >= e[s][0] && (n = s);
-    const l = Math.min(n + 1, e.length - 1), g = e[l][0] - e[n][0] || 1, p = (a - e[n][0]) / g;
-    u[a * 4] = e[n][1] + p * (e[l][1] - e[n][1]) | 0, u[a * 4 + 1] = e[n][2] + p * (e[l][2] - e[n][2]) | 0, u[a * 4 + 2] = e[n][3] + p * (e[l][3] - e[n][3]) | 0, u[a * 4 + 3] = 255;
+  ], c = new Uint8Array(256 * 4);
+  for (let o = 0; o < 256; o++) {
+    let i = 0;
+    for (let s = 0; s < t.length - 1; s++) o >= t[s][0] && (i = s);
+    const a = Math.min(i + 1, t.length - 1), r = t[a][0] - t[i][0] || 1, f = (o - t[i][0]) / r;
+    c[o * 4] = t[i][1] + f * (t[a][1] - t[i][1]) | 0, c[o * 4 + 1] = t[i][2] + f * (t[a][2] - t[i][2]) | 0, c[o * 4 + 2] = t[i][3] + f * (t[a][3] - t[i][3]) | 0, c[o * 4 + 3] = 255;
   }
-  return u;
+  return c;
 }
-const jt = `#version 300 es
+const be = `#version 300 es
 in vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0, 1); }
-`, Kt = `#version 300 es
+`, Se = `#version 300 es
 precision highp float;
 uniform sampler2D u_image;
 uniform sampler2D u_cmap;
@@ -159,34 +261,34 @@ void main() {
     fragColor.rgb *= fragColor.a;
 }
 `;
-function Ft(e, u, a) {
-  const n = e.createShader(u);
-  if (e.shaderSource(n, a), e.compileShader(n), !e.getShaderParameter(n, e.COMPILE_STATUS)) {
-    const l = e.getShaderInfoLog(n);
-    throw e.deleteShader(n), new Error("Shader: " + l);
+function ie(t, c, o) {
+  const i = t.createShader(c);
+  if (t.shaderSource(i, o), t.compileShader(i), !t.getShaderParameter(i, t.COMPILE_STATUS)) {
+    const a = t.getShaderInfoLog(i);
+    throw t.deleteShader(i), new Error("Shader: " + a);
   }
-  return n;
+  return i;
 }
-function Zt(e) {
-  const u = Ft(e, e.VERTEX_SHADER, jt), a = Ft(e, e.FRAGMENT_SHADER, Kt), n = e.createProgram();
-  if (e.attachShader(n, u), e.attachShader(n, a), e.linkProgram(n), !e.getProgramParameter(n, e.LINK_STATUS))
-    throw new Error("Link: " + e.getProgramInfoLog(n));
-  return n;
+function Ae(t) {
+  const c = ie(t, t.VERTEX_SHADER, be), o = ie(t, t.FRAGMENT_SHADER, Se), i = t.createProgram();
+  if (t.attachShader(i, c), t.attachShader(i, o), t.linkProgram(i), !t.getProgramParameter(i, t.LINK_STATUS))
+    throw new Error("Link: " + t.getProgramInfoLog(i));
+  return i;
 }
-function $t(e, u, a) {
-  const n = e.length, l = new Uint8Array(n * 4), g = a - u || 1e-30;
-  for (let p = 0; p < n; p++) {
-    const s = e[p];
+function Ce(t, c, o) {
+  const i = t.length, a = new Uint8Array(i * 4), r = o - c || 1e-30;
+  for (let f = 0; f < i; f++) {
+    const s = t[f];
     if (s !== s || !isFinite(s)) {
-      l[p * 4 + 3] = 0;
+      a[f * 4 + 3] = 0;
       continue;
     }
-    let x = (s - u) / g;
-    x = x < 0 ? 0 : x > 1 ? 1 : x, l[p * 4] = x * 255 + 0.5 | 0, l[p * 4 + 3] = 255;
+    let d = (s - c) / r;
+    d = d < 0 ? 0 : d > 1 ? 1 : d, a[f * 4] = d * 255 + 0.5 | 0, a[f * 4 + 3] = 255;
   }
-  return l;
+  return a;
 }
-const xt = {
+const Vt = {
   DSS: "CDS/P/DSS2/color",
   "2MASS": "CDS/P/2MASS/color",
   WISE: "CDS/P/allWISE/color",
@@ -195,7 +297,7 @@ const xt = {
   Mellinger: "CDS/P/Mellinger/color",
   Fermi: "CDS/P/Fermi/color",
   Haslam408: "CDS/P/HI4PI/NHI"
-}, Bt = {
+}, ae = {
   projection: "SIN",
   showCooGrid: !1,
   showFrame: !1,
@@ -213,7 +315,7 @@ const xt = {
   showStatusBar: !1,
   showReticle: !1,
   showContextMenu: !1
-}, Jt = [
+}, Me = [
   ".aladin-projection-control",
   ".aladin-location",
   ".aladin-fov",
@@ -228,124 +330,246 @@ const xt = {
   ".aladin-logo-container",
   ".aladin-table"
 ].join(", ");
-function Qt(e) {
-  const u = "astrowidget-aladin-control-layer";
-  if (e.querySelector(`#${u}`)) return;
-  const a = document.createElement("style");
-  a.id = u, a.textContent = `
-    .astrowidget-aladin-bg ${Jt} {
+function Pe(t) {
+  const c = "astrowidget-aladin-control-layer";
+  if (t.querySelector(`#${c}`)) return;
+  const o = document.createElement("style");
+  o.id = c, o.textContent = `
+    .astrowidget-aladin-bg ${Me} {
       z-index: 0 !important;
       pointer-events: none !important;
     }
-  `, e.appendChild(a);
+  `, t.appendChild(o);
 }
-function Nt(e, u) {
-  e.classList.add("astrowidget-aladin-bg"), Qt(u);
+function ce(t, c) {
+  t.classList.add("astrowidget-aladin-bg"), Pe(c);
 }
-async function oe({ model: e, el: u }) {
-  function a(v) {
-    console.log("[astrowidget]", v);
+async function Ne({ model: t, el: c }) {
+  function o(x) {
+    console.log("[astrowidget]", x);
   }
-  function n() {
-    const v = e.get("background_cut_min"), L = e.get("background_cut_max");
-    if (!g || !Number.isFinite(v) || !Number.isFinite(L)) return;
-    let t = 0;
-    function X() {
-      var K;
-      t += 1;
+  function i() {
+    const x = t.get("background_cut_min"), P = t.get("background_cut_max");
+    if (!r || !Number.isFinite(x) || !Number.isFinite(P)) return;
+    let e = 0;
+    function F() {
+      var q;
+      e += 1;
       try {
-        const P = (K = g.getBaseImageLayer) == null ? void 0 : K.call(g);
-        if (P != null && P.setCuts) {
-          P.setCuts(v, L), a("Background cuts: " + v + " .. " + L);
+        const I = (q = r.getBaseImageLayer) == null ? void 0 : q.call(r);
+        if (I != null && I.setCuts) {
+          I.setCuts(x, P), o("Background cuts: " + x + " .. " + P);
           return;
         }
-      } catch (P) {
-        a("Background setCuts pending: " + P.message);
+      } catch (I) {
+        o("Background setCuts pending: " + I.message);
       }
-      t < 25 && setTimeout(X, Math.min(100 * t, 1e3));
+      e < 25 && setTimeout(F, Math.min(100 * e, 1e3));
     }
-    X();
+    F();
   }
-  let l = null, g = null;
-  const p = e.get("background_survey");
-  if (p)
+  let a = null, r = null;
+  const f = t.get("background_survey");
+  if (f)
     try {
-      l = (await import("https://esm.sh/aladin-lite@3.8.2")).default, await l.init, a("Aladin Lite loaded");
-    } catch (v) {
-      a("Aladin Lite load failed: " + v.message);
+      a = (await import("https://esm.sh/aladin-lite@3.8.2")).default, await a.init, o("Aladin Lite loaded");
+    } catch (x) {
+      o("Aladin Lite load failed: " + x.message);
     }
   const s = document.createElement("div");
-  s.style.cssText = "position:relative;width:100%;height:600px;background:" + (p && l ? "transparent" : "#000"), u.appendChild(s);
-  const x = document.createElement("div");
-  x.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;z-index:0", p && l && (Nt(x, s), s.appendChild(x));
-  const d = document.createElement("canvas");
-  d.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;display:block;z-index:1", s.appendChild(d);
-  const at = document.createElement("div");
-  at.style.cssText = "position:absolute;top:8px;right:8px;z-index:3;display:flex;gap:4px", s.appendChild(at);
-  const H = "padding:4px 10px;font:12px sans-serif;border:1px solid #888;border-radius:3px;cursor:pointer;color:#fff;background:rgba(0,0,0,0.6)", yt = H + ";background:rgba(70,130,255,0.8);border-color:#7af";
-  function nt(v, L) {
-    const t = document.createElement("button");
-    return t.textContent = v, t.title = L, t.style.cssText = H, at.appendChild(t), t;
+  s.style.cssText = "position:relative;width:100%;height:600px;background:" + (f && a ? "transparent" : "#000"), c.appendChild(s);
+  const d = document.createElement("div");
+  d.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;z-index:0", f && a && (ce(d, s), s.appendChild(d));
+  const g = document.createElement("canvas");
+  g.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;display:block;z-index:1", s.appendChild(g);
+  const v = document.createElement("div");
+  v.style.cssText = "position:absolute;top:8px;right:8px;z-index:3;display:flex;gap:4px", s.appendChild(v);
+  const E = "padding:4px 10px;font:12px sans-serif;border:1px solid #888;border-radius:3px;cursor:pointer;color:#fff;background:rgba(0,0,0,0.6)", D = E + ";background:rgba(70,130,255,0.8);border-color:#7af";
+  function C(x, P) {
+    const e = document.createElement("button");
+    return e.textContent = x, e.title = P, e.style.cssText = E, v.appendChild(e), e;
   }
-  const Ot = nt("↺", "Reset view to initial position"), Et = nt("✥", "Pan mode (drag to rotate)"), wt = nt("⬚", "Box zoom (drag to select region)"), b = document.createElement("div");
+  const V = C("↺", "Reset view to initial position"), z = C("✥", "Pan mode (drag to rotate)"), H = C("⬚", "Box zoom (drag to select region)"), b = document.createElement("div");
   b.style.cssText = "position:absolute;border:2px dashed #7af;background:rgba(70,130,255,0.15);pointer-events:none;z-index:2;display:none", s.appendChild(b);
-  const j = document.createElement("div");
-  j.style.cssText = "position:absolute;bottom:8px;left:8px;color:#fff;font:13px monospace;text-shadow:0 0 4px #000;pointer-events:none;z-index:2", s.appendChild(j);
+  const W = document.createElement("div");
+  W.style.cssText = "position:absolute;bottom:8px;left:8px;color:#fff;font:13px monospace;text-shadow:0 0 4px #000;pointer-events:none;z-index:2", s.appendChild(W);
   try {
-    let ut = function(o) {
-      st = o, Et.style.cssText = o === "pan" ? yt : H, wt.style.cssText = o === "boxzoom" ? yt : H, d.style.cursor = o === "pan" ? "grab" : "crosshair";
-    }, ft = function() {
-      if (!J) return;
-      const o = $t(J, bt, At);
-      t.activeTexture(t.TEXTURE0), t.bindTexture(t.TEXTURE_2D, Tt), t.texImage2D(t.TEXTURE_2D, 0, t.RGBA, Z, $, 0, t.RGBA, t.UNSIGNED_BYTE, o);
-    }, m = function() {
-      t.viewport(0, 0, d.width, d.height), t.clearColor(0, 0, 0, 0), t.clear(t.COLOR_BUFFER_BIT), t.enable(t.BLEND), t.blendFunc(t.ONE, t.ONE_MINUS_SRC_ALPHA), t.useProgram(X), t.uniform1i(y.u_image, 0), t.uniform1i(y.u_cmap, 1), t.uniform2f(y.u_crval, V[0], V[1]), t.uniform2f(y.u_cdelt, rt[0], rt[1]), t.uniform2f(y.u_crpix, it[0], it[1]), t.uniform2f(y.u_imageSize, Z, $), t.uniform2f(y.u_viewCenter, _, h), t.uniform1f(y.u_fov, f), t.uniform1f(y.u_opacity, Rt), t.uniform1i(y.u_stretch, Dt), t.uniform1i(y.u_showGrid, Ct), t.uniform2f(y.u_crosshair, St, Pt), t.uniform2f(y.u_resolution, d.width, d.height), t.drawArrays(t.TRIANGLES, 0, 6);
-    }, et = function() {
-      const o = e.get("image_data"), c = e.get("image_shape");
-      if (!o || !c || c[0] === 0) return;
-      const r = o.byteLength || o.length;
-      r !== 0 && ($ = c[0], Z = c[1], J = new Float32Array(o.buffer.slice(o.byteOffset, o.byteOffset + r)), a("Image: " + Z + "x" + $ + ", " + J.length + " floats"), ft());
-    }, Y = function() {
-      const o = e.get("crval"), c = e.get("cdelt"), r = e.get("crpix");
-      o && (V = [o[0] * i, o[1] * i]), c && (rt = [c[0] * i, c[1] * i]), r && (it = [r[0], r[1]]);
-    }, W = function() {
-      k || (_ = (e.get("view_ra") || 0) * i, h = (e.get("view_dec") || 0) * i, f = (e.get("view_fov") || 180) * i);
-    }, U = function() {
-      bt = e.get("vmin") || 0, At = e.get("vmax") || 1, Rt = e.get("opacity") ?? 1, Dt = Yt[e.get("stretch")] || 0, Ct = e.get("show_grid") === !1 ? 0 : 1;
+    let Ct = function(n) {
+      Rt = n, z.style.cssText = n === "pan" ? D : E, H.style.cssText = n === "boxzoom" ? D : E, g.style.cursor = n === "pan" ? "grab" : "crosshair";
     }, Mt = function() {
-      U(), et(), Y(), W(), m();
-    }, N = function() {
-      if (!g) return;
-      const o = (_ / i % 360 + 360) % 360, c = h / i, r = f / i;
-      g.gotoRaDec(o, c), g.setFoV(r);
-    }, Lt = function() {
-      ot++, Mt();
-      const o = e.get("image_data");
-      if (o && (o.byteLength || o.length) > 0) {
-        a("Data arrived after " + ot + " poll(s)"), requestAnimationFrame(m), N(), ct = _, lt = h, dt = f;
+      if (!nt) return;
+      const n = Ce(nt, Gt, Ot);
+      e.activeTexture(e.TEXTURE0), e.bindTexture(e.TEXTURE_2D, yt), e.texImage2D(e.TEXTURE_2D, 0, e.RGBA, tt, et, 0, e.RGBA, e.UNSIGNED_BYTE, n);
+    }, $ = function() {
+      const n = r == null ? void 0 : r.view, u = (n == null ? void 0 : n.width) ?? g.clientWidth, l = (n == null ? void 0 : n.height) ?? g.clientHeight;
+      return u / Math.max(l, 1);
+    }, ct = function() {
+      return K || Yt(m, $());
+    }, Pt = function(n) {
+      const u = 1e-3 * h, l = r ? _e($()) : Math.PI;
+      return Math.max(u, Math.min(l, n));
+    }, fe = function() {
+      if (!(r != null && r.getRaDec)) return;
+      const [n, u] = r.getRaDec();
+      if (w = n * h, T = u * h, typeof r.getFov == "function") {
+        const l = r.getFov(), p = Array.isArray(l) ? l[0] : l, _ = Array.isArray(l) ? l[1] : p;
+        m = Math.max(p, _) * h;
+      }
+      st();
+    }, st = function() {
+      if (!(r != null && r.getRotation)) {
+        U = 0;
         return;
       }
-      ot < It ? setTimeout(Lt, Math.min(100 * Math.pow(1.5, ot - 1), 1e3)) : (a("No image data after " + It + " polls — waiting for change event"), N(), ct = _, lt = h, dt = f);
-    }, kt = function(o, c) {
-      const r = d.getBoundingClientRect(), D = (o - r.left) / r.width * 2 - 1, M = -((c - r.top) / r.height * 2 - 1), z = d.width / d.height, w = Math.tan(f * 0.5), E = -D * w * z, T = M * w, S = Math.sqrt(E * E + T * T);
-      if (S < 1e-10) return { ra: _, dec: h };
-      const I = Math.atan(S), C = Math.sin(I), A = Math.cos(I), G = Math.sin(h), O = Math.cos(h), q = Math.asin(A * G + T * C * O / S);
-      return { ra: _ + Math.atan2(E * C, S * O * A - T * G * C), dec: q };
+      U = -r.getRotation() * h;
+    }, O = function() {
+      if (!r) {
+        K = null;
+        return;
+      }
+      const n = r.view, u = (n == null ? void 0 : n.width) ?? d.clientWidth, l = (n == null ? void 0 : n.height) ?? d.clientHeight;
+      K = ve(
+        r,
+        u,
+        l,
+        w,
+        T,
+        U
+      ) ?? null;
+    }, S = function() {
+      r && (st(), O()), e.viewport(0, 0, g.width, g.height), e.clearColor(0, 0, 0, 0), e.clear(e.COLOR_BUFFER_BIT), e.enable(e.BLEND), e.blendFunc(e.ONE, e.ONE_MINUS_SRC_ALPHA), e.useProgram(F), e.uniform1i(y.u_image, 0), e.uniform1i(y.u_cmap, 1), e.uniform2f(y.u_crval, j[0], j[1]), e.uniform2f(y.u_cdelt, wt[0], wt[1]), e.uniform2f(y.u_crpix, Tt[0], Tt[1]), e.uniform2f(y.u_imageSize, tt, et), e.uniform2f(y.u_viewCenter, w, T);
+      const n = ct();
+      e.uniform2f(y.u_viewScale, n.scaleX, n.scaleY), st(), e.uniform1f(y.u_viewRotation, U), e.uniform1f(y.u_fov, m), e.uniform1f(y.u_opacity, zt), e.uniform1i(y.u_stretch, Ht), e.uniform1i(y.u_showGrid, Wt);
+      let u = -999, l = -999;
+      if (Dt > -900)
+        u = Dt, l = jt;
+      else if (Et > -900) {
+        const p = Te(
+          Et,
+          qt,
+          w,
+          T,
+          m,
+          $(),
+          n,
+          U
+        );
+        p && (u = p.x, l = p.y);
+      }
+      e.uniform2f(y.u_crosshairScreen, u, l), e.uniform2f(y.u_resolution, g.width, g.height), e.drawArrays(e.TRIANGLES, 0, 6);
+    }, de = function() {
+      nt = null, tt = 1, et = 1, e.activeTexture(e.TEXTURE0), e.bindTexture(e.TEXTURE_2D, yt), e.texImage2D(
+        e.TEXTURE_2D,
+        0,
+        e.RGBA,
+        1,
+        1,
+        0,
+        e.RGBA,
+        e.UNSIGNED_BYTE,
+        new Uint8Array([0, 0, 0, 0])
+      );
+    }, lt = function() {
+      const n = t.get("image_data"), u = t.get("image_shape"), l = n ? n.byteLength || n.length : 0;
+      if (!n || !u || u[0] === 0 || l === 0) {
+        de();
+        return;
+      }
+      et = u[0], tt = u[1], nt = new Float32Array(n.buffer.slice(n.byteOffset, n.byteOffset + l)), o("Image: " + tt + "x" + et + ", " + nt.length + " floats"), Mt();
+    }, J = function() {
+      const n = t.get("crval"), u = t.get("cdelt"), l = t.get("crpix");
+      n && (j = [n[0] * h, n[1] * h]), u && (wt = [u[0] * h, u[1] * h]), l && (Tt = [l[0], l[1]]);
+    }, Xt = function() {
+      w = (t.get("view_ra") || 0) * h, T = (t.get("view_dec") || 0) * h, m = (t.get("view_fov") || 180) * h;
+    }, he = function() {
+      L || Xt();
+    }, B = function() {
+      Gt = t.get("vmin") || 0, Ot = t.get("vmax") || 1, zt = t.get("opacity") ?? 1, Ht = ue[t.get("stretch")] || 0, Wt = t.get("show_grid") === !1 ? 0 : 1;
+    }, Kt = function() {
+      Ft || (Ft = !0, requestAnimationFrame(() => {
+        Ft = !1, S();
+      }));
+    }, Zt = function() {
+      B(), lt(), J(), he(), S();
+    }, It = function() {
+      if (r && fe(), ut(), S(), t.get("overlay_view_lock")) {
+        const n = t.get("view_gesture_revision") || 0;
+        t.set("view_gesture_revision", n + 1), t.save_changes();
+      }
+    }, Nt = function() {
+      L || (Xt(), K = null, ut(), Kt());
+    }, ut = function(n = !0) {
+      if (!r) return;
+      m = Pt(m);
+      const u = m / h;
+      if (n) {
+        const l = (w / h % 360 + 360) % 360, p = T / h;
+        r.gotoRaDec(l, p);
+      }
+      r.setFoV(u), O();
+    }, ft = function(n, u) {
+      const l = d.getBoundingClientRect(), p = r.view, _ = (p == null ? void 0 : p.width) ?? l.width, R = (p == null ? void 0 : p.height) ?? l.height;
+      return {
+        x: (n - l.left) * (_ / l.width),
+        y: (u - l.top) * (R / l.height)
+      };
+    }, ge = function(n, u, l, p) {
+      var vt;
+      const _ = (vt = r == null ? void 0 : r.view) == null ? void 0 : vt.wasm;
+      if (!(_ != null && _.goFromTo)) return !1;
+      let { x: R, y: A } = ft(n, u), { x: M, y: X } = ft(l, p);
+      t.get("invert_horizontal_pan") === !1 && ([R, M] = [M, R]), _.goFromTo(R, A, M, X), r.view.updateCenter();
+      const [k, rt] = r.getRaDec();
+      return w = k * h, T = rt * h, st(), !0;
+    }, Jt = function() {
+      dt++, Zt();
+      const n = t.get("image_data");
+      if (n && (n.byteLength || n.length) > 0) {
+        o("Data arrived after " + dt + " poll(s)"), requestAnimationFrame(S), bt = w, St = T, At = m;
+        return;
+      }
+      dt < $t ? setTimeout(Jt, Math.min(100 * Math.pow(1.5, dt - 1), 1e3)) : (o("No image data after " + $t + " polls — waiting for change event"), ut(), bt = w, St = T, At = m);
+    }, _t = function(n, u) {
+      const l = g.getBoundingClientRect();
+      return {
+        x: (n - l.left) / l.width * 2 - 1,
+        y: -((u - l.top) / l.height * 2 - 1)
+      };
+    }, kt = function(n, u) {
+      const { x: l, y: p } = _t(n, u);
+      return xt(
+        l,
+        p,
+        w,
+        T,
+        m,
+        $(),
+        ct(),
+        U
+      );
+    }, pe = function(n, u) {
+      return De(
+        n,
+        u,
+        r,
+        ft,
+        kt
+      );
     };
-    const v = s.getBoundingClientRect(), L = window.devicePixelRatio || 1;
-    d.width = (v.width || 800) * L, d.height = (v.height || 600) * L;
-    const t = d.getContext("webgl2", { alpha: !0, premultipliedAlpha: !0, preserveDrawingBuffer: !0 });
-    if (!t) {
-      a("FAIL: No WebGL2");
+    const x = s.getBoundingClientRect(), P = window.devicePixelRatio || 1;
+    g.width = (x.width || 800) * P, g.height = (x.height || 600) * P;
+    const e = g.getContext("webgl2", { alpha: !0, premultipliedAlpha: !0, preserveDrawingBuffer: !0 });
+    if (!e) {
+      o("FAIL: No WebGL2");
       return;
     }
-    a("WebGL2: " + t.getParameter(t.RENDERER));
-    const X = Zt(t);
-    a("Shader compiled OK"), t.useProgram(X);
-    const K = t.createBuffer();
-    t.bindBuffer(t.ARRAY_BUFFER, K), t.bufferData(t.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), t.STATIC_DRAW);
-    const P = t.getAttribLocation(X, "a_pos");
-    t.enableVertexAttribArray(P), t.vertexAttribPointer(P, 2, t.FLOAT, !1, 0, 0);
+    o("WebGL2: " + e.getParameter(e.RENDERER));
+    const F = Ae(e);
+    o("Shader compiled OK"), e.useProgram(F);
+    const q = e.createBuffer();
+    e.bindBuffer(e.ARRAY_BUFFER, q), e.bufferData(e.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), e.STATIC_DRAW);
+    const I = e.getAttribLocation(F, "a_pos");
+    e.enableVertexAttribArray(I), e.vertexAttribPointer(I, 2, e.FLOAT, !1, 0, 0);
     const y = {};
     [
       "u_image",
@@ -364,164 +588,208 @@ async function oe({ model: e, el: u }) {
       "u_crosshairScreen",
       "u_resolution"
     ].forEach(
-      (o) => y[o] = t.getUniformLocation(X, o)
+      (n) => y[n] = e.getUniformLocation(F, n)
     );
-    const Vt = t.createTexture();
-    t.activeTexture(t.TEXTURE1), t.bindTexture(t.TEXTURE_2D, Vt), t.texImage2D(t.TEXTURE_2D, 0, t.RGBA, 256, 1, 0, t.RGBA, t.UNSIGNED_BYTE, Ht()), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_MIN_FILTER, t.LINEAR), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_MAG_FILTER, t.LINEAR), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_WRAP_S, t.CLAMP_TO_EDGE), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_WRAP_T, t.CLAMP_TO_EDGE), a("Colormap texture OK");
-    const Tt = t.createTexture();
-    t.activeTexture(t.TEXTURE0), t.bindTexture(t.TEXTURE_2D, Tt), t.texImage2D(t.TEXTURE_2D, 0, t.RGBA, 1, 1, 0, t.RGBA, t.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255])), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_MIN_FILTER, t.NEAREST), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_MAG_FILTER, t.NEAREST), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_WRAP_S, t.CLAMP_TO_EDGE), t.texParameteri(t.TEXTURE_2D, t.TEXTURE_WRAP_T, t.CLAMP_TO_EDGE);
-    let Z = 1, $ = 1, J = null, V = [0, 0], rt = [1, 1], it = [0, 0], _ = 0, h = 0, f = Math.PI, bt = 0, At = 1, Rt = 1, Dt = 0, Ct = 1, Q = !1, k = !1, R = null, St = -999, Pt = -999;
-    const Yt = { linear: 0, log: 1, sqrt: 2, asinh: 3 };
-    let st = "pan", ct = 0, lt = 0, dt = Math.PI, F = 0, B = 0, tt = !1;
-    if (ut("pan"), Et.addEventListener("click", () => ut("pan")), wt.addEventListener("click", () => ut("boxzoom")), Ot.addEventListener("click", () => {
-      k = !0, _ = ct, h = lt, f = dt, e.set("view_ra", _ / i), e.set("view_dec", h / i), e.set("view_fov", f / i), e.save_changes(), N(), m(), R && clearTimeout(R), R = setTimeout(() => {
-        k = !1;
+    const Q = e.createTexture();
+    e.activeTexture(e.TEXTURE1), e.bindTexture(e.TEXTURE_2D, Q), e.texImage2D(e.TEXTURE_2D, 0, e.RGBA, 256, 1, 0, e.RGBA, e.UNSIGNED_BYTE, Re()), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_MIN_FILTER, e.LINEAR), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_MAG_FILTER, e.LINEAR), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_WRAP_S, e.CLAMP_TO_EDGE), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_WRAP_T, e.CLAMP_TO_EDGE), o("Colormap texture OK");
+    const yt = e.createTexture();
+    e.activeTexture(e.TEXTURE0), e.bindTexture(e.TEXTURE_2D, yt), e.texImage2D(e.TEXTURE_2D, 0, e.RGBA, 1, 1, 0, e.RGBA, e.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255])), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_MIN_FILTER, e.NEAREST), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_MAG_FILTER, e.NEAREST), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_WRAP_S, e.CLAMP_TO_EDGE), e.texParameteri(e.TEXTURE_2D, e.TEXTURE_WRAP_T, e.CLAMP_TO_EDGE);
+    let tt = 1, et = 1, nt = null, j = [0, 0], wt = [1, 1], Tt = [0, 0], w = 0, T = 0, m = Math.PI, K = null, U = 0, Gt = 0, Ot = 1, zt = 1, Ht = 0, Wt = 1, Z = !1, ot = !1, L = !1, N = null, Et = -999, qt = -999, Dt = -999, jt = -999;
+    const ue = { linear: 0, log: 1, sqrt: 2, asinh: 3 };
+    let Rt = "pan", bt = 0, St = 0, At = Math.PI, Y = 0, G = 0, at = !1;
+    Ct("pan"), z.addEventListener("click", () => Ct("pan")), H.addEventListener("click", () => Ct("boxzoom")), V.addEventListener("click", () => {
+      L = !0, w = bt, T = St, m = At, t.set("view_ra", w / h), t.set("view_dec", T / h), t.set("view_fov", m / h), t.save_changes(), ut(), S(), N && clearTimeout(N), N = setTimeout(() => {
+        L = !1;
       }, 500);
-    }), e.on("change:image_data", () => {
-      U(), et(), Y();
-    }), e.on("change:image_shape", () => {
-      et();
-    }), e.on("change:crval", () => {
-      Y();
-    }), e.on("change:cdelt", () => {
-      Y();
-    }), e.on("change:crpix", () => {
-      Y();
-    }), e.on("change:vmin", () => {
-      U(), ft();
-    }), e.on("change:vmax", () => {
-      U(), ft();
-    }), e.on("change:image_revision", () => {
-      U(), et(), Y(), W(), m();
-    }), e.on("change:view_ra", () => {
-      W(), m();
-    }), e.on("change:view_dec", () => {
-      W(), m();
-    }), e.on("change:view_fov", () => {
-      W(), m();
-    }), e.on("change:opacity", () => {
-      U(), m();
-    }), e.on("change:stretch", () => {
-      U(), m();
-    }), e.on("change:show_grid", () => {
-      U(), m();
-    }), e.on("change:background_survey", () => {
-      const o = e.get("background_survey");
-      s.style.background = o ? "transparent" : "#000", m();
-    }), l && p) {
-      const o = xt[p] || p, c = (_ / i % 360 + 360) % 360, r = h / i, D = f / i;
-      g = l.aladin(x, {
-        fov: D || 180,
-        target: c + " " + r,
-        survey: o,
-        ...Bt
-      }), a("Aladin viewer created: " + p), n();
+    });
+    let Ft = !1;
+    if (t.on("change:image_data", () => {
+      B(), lt(), J();
+    }), t.on("change:image_shape", () => {
+      lt();
+    }), t.on("change:crval", () => {
+      J();
+    }), t.on("change:cdelt", () => {
+      J();
+    }), t.on("change:crpix", () => {
+      J();
+    }), t.on("change:vmin", () => {
+      B(), Mt();
+    }), t.on("change:vmax", () => {
+      B(), Mt();
+    }), t.on("change:image_revision", () => {
+      B(), lt(), J(), t.get("overlay_view_lock") || Xt(), K = null, r && O(), Kt();
+    }), t.on("change:view_ra", Nt), t.on("change:view_dec", Nt), t.on("change:view_fov", Nt), t.on("change:opacity", () => {
+      B(), S();
+    }), t.on("change:stretch", () => {
+      B(), S();
+    }), t.on("change:show_grid", () => {
+      B(), S();
+    }), t.on("change:background_survey", () => {
+      const n = t.get("background_survey");
+      s.style.background = n ? "transparent" : "#000", S();
+    }), a && f) {
+      const n = Vt[f] || f, u = (w / h % 360 + 360) % 360, l = T / h, p = m / h;
+      r = a.aladin(d, {
+        fov: p || 180,
+        target: u + " " + l,
+        survey: n,
+        ...ae
+      }), o("Aladin viewer created: " + f), i(), O();
     }
-    e.on("change:background_survey", async () => {
-      const o = e.get("background_survey");
-      if (o && g) {
-        const c = xt[o] || o;
-        g.setBaseImageLayer(c), s.style.background = "transparent", n();
-      } else if (o && !g && !l)
+    t.on("change:background_survey", async () => {
+      const n = t.get("background_survey");
+      if (n && r) {
+        const u = Vt[n] || n;
+        r.setBaseImageLayer(u), s.style.background = "transparent", i();
+      } else if (n && !r && !a)
         try {
-          l = (await import("https://esm.sh/aladin-lite@3.8.2")).default, await l.init, Nt(x, s), s.appendChild(x), s.style.background = "transparent";
-          const r = xt[o] || o;
-          g = l.aladin(x, {
-            fov: f / i || 180,
-            target: (_ / i % 360 + 360) % 360 + " " + h / i,
-            survey: r,
-            ...Bt
-          }), a("Aladin loaded on demand: " + o), n();
-        } catch (c) {
-          a("Aladin load failed: " + c.message);
+          a = (await import("https://esm.sh/aladin-lite@3.8.2")).default, await a.init, ce(d, s), s.appendChild(d), s.style.background = "transparent";
+          const l = Vt[n] || n;
+          r = a.aladin(d, {
+            fov: m / h || 180,
+            target: (w / h % 360 + 360) % 360 + " " + T / h,
+            survey: l,
+            ...ae
+          }), o("Aladin loaded on demand: " + n), i(), O();
+        } catch (u) {
+          o("Aladin load failed: " + u.message);
         }
-      else o || (s.style.background = "#000", x.style.display = "none");
-      m();
-    }), e.on("change:background_cut_min", () => {
-      n();
-    }), e.on("change:background_cut_max", () => {
-      n();
-    }), Mt();
-    let ot = 0;
-    const It = 30;
-    setTimeout(Lt, 50);
-    let ht = 0, gt = 0, pt = 0, _t = 0, mt = !1;
-    d.style.cursor = "grab", d.addEventListener("mousedown", (o) => {
-      if (k = !0, R && (clearTimeout(R), R = null), pt = o.clientX, _t = o.clientY, mt = !1, st === "boxzoom") {
-        tt = !0;
-        const c = s.getBoundingClientRect();
-        F = o.clientX - c.left, B = o.clientY - c.top, b.style.left = F + "px", b.style.top = B + "px", b.style.width = "0", b.style.height = "0", b.style.display = "block";
+      else n || (s.style.background = "#000", d.style.display = "none");
+      S();
+    }), t.on("change:background_cut_min", () => {
+      i();
+    }), t.on("change:background_cut_max", () => {
+      i();
+    }), Zt();
+    let dt = 0;
+    const $t = 30;
+    setTimeout(Jt, 50);
+    let ht = 0, gt = 0, pt = 0, mt = 0, Lt = !1;
+    g.style.cursor = "grab", g.addEventListener("mousedown", (n) => {
+      if (L = !0, N && (clearTimeout(N), N = null), pt = n.clientX, mt = n.clientY, Lt = !1, Rt === "boxzoom") {
+        at = !0;
+        const u = s.getBoundingClientRect();
+        Y = n.clientX - u.left, G = n.clientY - u.top, b.style.left = Y + "px", b.style.top = G + "px", b.style.width = "0", b.style.height = "0", b.style.display = "block";
       } else
-        Q = !0, ht = o.clientX, gt = o.clientY, d.style.cursor = "grabbing";
-    }), window.addEventListener("mousemove", (o) => {
-      if (tt) {
-        const w = s.getBoundingClientRect(), E = o.clientX - w.left, T = o.clientY - w.top, S = Math.min(F, E), I = Math.min(B, T), C = Math.abs(E - F), A = Math.abs(T - B);
-        b.style.left = S + "px", b.style.top = I + "px", b.style.width = C + "px", b.style.height = A + "px", mt = !0;
+        ot = !0, ht = n.clientX, gt = n.clientY, g.style.cursor = "grabbing";
+    }), window.addEventListener("mousemove", (n) => {
+      if (ot && !Z) {
+        if (Math.sqrt((n.clientX - pt) ** 2 + (n.clientY - mt) ** 2) < 3) return;
+        ot = !1, Z = !0;
+      }
+      if (at) {
+        const _ = s.getBoundingClientRect(), R = n.clientX - _.left, A = n.clientY - _.top, M = Math.min(Y, R), X = Math.min(G, A), k = Math.abs(R - Y), rt = Math.abs(A - G);
+        b.style.left = M + "px", b.style.top = X + "px", b.style.width = k + "px", b.style.height = rt + "px", Lt = !0;
         return;
       }
-      if (!Q) {
-        const w = d.getBoundingClientRect(), E = (o.clientX - w.left) / w.width * 2 - 1, T = -((o.clientY - w.top) / w.height * 2 - 1), S = d.width / d.height, I = Math.tan(f * 0.5), C = -E * I * S, A = T * I, G = Math.sqrt(C * C + A * A);
-        if (G < 1e-10) {
-          const O = (_ / i % 360 + 360) % 360;
-          j.textContent = zt(O) + "  " + Gt(h / i);
-        } else {
-          const O = Math.atan(G), q = Math.sin(O), vt = Math.cos(O), Ut = Math.sin(h), Xt = Math.cos(h), Wt = Math.asin(vt * Ut + A * q * Xt / G), qt = ((_ + Math.atan2(C * q, G * Xt * vt - A * Ut * q)) / i % 360 + 360) % 360;
-          j.textContent = zt(qt) + "  " + Gt(Wt / i);
-        }
-        return;
-      }
-      const c = (o.clientX - ht) / d.clientWidth * f, r = (o.clientY - gt) / d.clientHeight * f, D = d.width / d.height, M = Math.max(Math.cos(h), 0.01), z = e.get("invert_horizontal_pan") === !1 ? 1 : -1;
-      _ -= z * c * D / M, h = Math.max(-Math.PI / 2 + 1e-3, Math.min(Math.PI / 2 - 1e-3, h + r)), ht = o.clientX, gt = o.clientY, mt = !0, N(), requestAnimationFrame(m);
-    }), window.addEventListener("mouseup", (o) => {
-      if (tt) {
-        if (tt = !1, b.style.display = "none", R = setTimeout(() => {
-          k = !1;
-        }, 500), Math.sqrt((o.clientX - pt) ** 2 + (o.clientY - _t) ** 2) < 5) return;
-        const r = s.getBoundingClientRect(), D = o.clientX - r.left, M = o.clientY - r.top, z = (F + D) / 2 / r.width * 2 - 1, w = -((B + M) / 2 / r.height * 2 - 1), E = kt(
-          r.left + (F + D) / 2,
-          r.top + (B + M) / 2
+      if (!Z) {
+        const _ = g.getBoundingClientRect(), R = (n.clientX - _.left) / _.width * 2 - 1, A = -((n.clientY - _.top) / _.height * 2 - 1), M = $(), X = xt(
+          R,
+          A,
+          w,
+          T,
+          m,
+          M,
+          ct(),
+          U
         );
-        _ = E.ra, h = E.dec;
-        const T = Math.max(
-          Math.abs(D - F) / r.width,
-          Math.abs(M - B) / r.height
-        );
-        f = f * T, f = Math.max(1e-3 * i, Math.min(Math.PI, f)), e.set("view_ra", _ / i), e.set("view_dec", h / i), e.set("view_fov", f / i), e.save_changes(), N(), m();
-        return;
-      }
-      if (Q)
-        if (Q = !1, d.style.cursor = st === "pan" ? "grab" : "crosshair", R = setTimeout(() => {
-          k = !1;
-        }, 500), Math.sqrt((o.clientX - pt) ** 2 + (o.clientY - _t) ** 2) < 3) {
-          const r = kt(o.clientX, o.clientY), D = (r.ra / i % 360 + 360) % 360, M = r.dec / i;
-          e.set("clicked_coord", [D, M]);
-          const z = r.ra - V[0], w = Math.sin(r.dec), E = Math.cos(r.dec), T = Math.sin(V[1]), S = Math.cos(V[1]), I = E * Math.sin(z), C = w * S - E * T * Math.cos(z);
-          e.set("clicked_lm", [I, C]);
-          const A = e.get("click_tick");
-          e.set("click_tick", (A ?? 0) + 1), e.save_changes(), St = r.ra, Pt = r.dec, requestAnimationFrame(m);
+        if (X) {
+          const k = (X.ra / h % 360 + 360) % 360;
+          W.textContent = Xe(k) + "  " + Fe(X.dec / h);
         } else
-          e.set("view_ra", _ / i), e.set("view_dec", h / i), e.save_changes(), N();
-    }), d.addEventListener("wheel", (o) => {
-      o.preventDefault(), k = !0, R && clearTimeout(R), f *= o.deltaY > 0 ? 1.1 : 1 / 1.1, f = Math.max(1e-3 * i, Math.min(Math.PI, f)), e.set("view_fov", f / i), e.save_changes(), N(), requestAnimationFrame(m), R = setTimeout(() => {
-        k = !1;
+          W.textContent = "";
+        return;
+      }
+      const u = $(), l = ct();
+      if (!ge(ht, gt, n.clientX, n.clientY)) {
+        const _ = _t(ht, gt), R = _t(n.clientX, n.clientY), A = Ee(
+          _.x,
+          _.y,
+          R.x,
+          R.y,
+          w,
+          T,
+          m,
+          u,
+          {
+            invertHorizontalPan: t.get("invert_horizontal_pan") !== !1,
+            scales: l,
+            rotationRad: U
+          }
+        );
+        A && (w = A.viewRA, T = A.viewDec);
+      }
+      r && O(), ht = n.clientX, gt = n.clientY, Lt = !0, requestAnimationFrame(S);
+    }), window.addEventListener("mouseup", (n) => {
+      if (at) {
+        if (at = !1, b.style.display = "none", N = setTimeout(() => {
+          L = !1;
+        }, 500), Math.sqrt((n.clientX - pt) ** 2 + (n.clientY - mt) ** 2) < 5) return;
+        const l = s.getBoundingClientRect(), p = n.clientX - l.left, _ = n.clientY - l.top, R = (Y + p) / 2 / l.width * 2 - 1, A = -((G + _) / 2 / l.height * 2 - 1), M = kt(
+          l.left + (Y + p) / 2,
+          l.top + (G + _) / 2
+        );
+        if (!M) return;
+        w = M.ra, T = M.dec;
+        const X = Math.max(
+          Math.abs(p - Y) / l.width,
+          Math.abs(_ - G) / l.height
+        ), k = m * 0.5;
+        m = 2 * Math.asin(Math.min(1, X * Math.sin(k))), m = Pt(m), t.set("view_ra", w / h), t.set("view_dec", T / h), t.set("view_fov", m / h), t.save_changes(), It();
+        return;
+      }
+      if (Z || ot) {
+        const u = Z;
+        if (Z = !1, ot = !1, g.style.cursor = Rt === "pan" ? "grab" : "crosshair", N = setTimeout(() => {
+          L = !1;
+        }, 500), Math.sqrt((n.clientX - pt) ** 2 + (n.clientY - mt) ** 2) < 3) {
+          const p = pe(n.clientX, n.clientY);
+          if (!p) return;
+          const _ = (p.ra / h % 360 + 360) % 360, R = p.dec / h;
+          t.set("clicked_coord", [_, R]);
+          try {
+            let Ut = NaN, ee = NaN;
+            if (r != null && r.pix2world) {
+              const re = ft(n.clientX, n.clientY), it = r.pix2world(re.x, re.y);
+              Array.isArray(it) && isFinite(it[0]) && isFinite(it[1]) && (Ut = (it[0] % 360 + 360) % 360, ee = it[1]);
+            }
+            let ne = NaN, oe = NaN;
+            const Bt = kt(n.clientX, n.clientY);
+            Bt && (ne = (Bt.ra / h % 360 + 360) % 360, oe = Bt.dec / h), t.set("clicked_coord_debug", [Ut, ee, ne, oe]);
+          } catch {
+            t.set("clicked_coord_debug", [NaN, NaN, NaN, NaN]);
+          }
+          const A = p.ra - j[0], M = Math.sin(p.dec), X = Math.cos(p.dec), k = Math.sin(j[1]), rt = Math.cos(j[1]), vt = X * Math.sin(A), me = M * rt - X * k * Math.cos(A);
+          t.set("clicked_lm", [vt, me]);
+          const Qt = t.get("click_tick");
+          t.set("click_tick", (Qt ?? 0) + 1), t.save_changes();
+          const te = _t(n.clientX, n.clientY);
+          Dt = te.x, jt = te.y, Et = p.ra, qt = p.dec, requestAnimationFrame(S);
+        } else
+          t.set("view_ra", w / h), t.set("view_dec", T / h), t.save_changes(), It();
+      }
+    }), g.addEventListener("wheel", (n) => {
+      n.preventDefault(), L = !0, N && clearTimeout(N), m *= n.deltaY > 0 ? 1.1 : 1 / 1.1, m = Pt(m), t.set("view_fov", m / h), t.save_changes(), r ? (r.setFoV(m / h), requestAnimationFrame(It)) : requestAnimationFrame(S), N = setTimeout(() => {
+        L = !1;
       }, 500);
     }, { passive: !1 }), new ResizeObserver(() => {
-      const o = s.getBoundingClientRect(), c = window.devicePixelRatio || 1;
-      d.width = o.width * c, d.height = o.height * c, m();
+      const n = s.getBoundingClientRect(), u = window.devicePixelRatio || 1;
+      g.width = n.width * u, g.height = n.height * u, O(), S();
     }).observe(s);
-  } catch (v) {
-    a("ERROR: " + v.message), a(v.stack);
+  } catch (x) {
+    o("ERROR: " + x.message), o(x.stack);
   }
 }
-function zt(e) {
-  const u = e / 15, a = Math.floor(u), n = Math.floor((u - a) * 60), l = ((u - a) * 60 - n) * 60;
-  return a + "h" + String(n).padStart(2, "0") + "m" + l.toFixed(1).padStart(4, "0") + "s";
+function Xe(t) {
+  const c = t / 15, o = Math.floor(c), i = Math.floor((c - o) * 60), a = ((c - o) * 60 - i) * 60;
+  return o + "h" + String(i).padStart(2, "0") + "m" + a.toFixed(1).padStart(4, "0") + "s";
 }
-function Gt(e) {
-  const u = e >= 0 ? "+" : "-", a = Math.abs(e), n = Math.floor(a), l = Math.floor((a - n) * 60), g = ((a - n) * 60 - l) * 60;
-  return u + n + "°" + String(l).padStart(2, "0") + "'" + g.toFixed(1).padStart(4, "0") + '"';
+function Fe(t) {
+  const c = t >= 0 ? "+" : "-", o = Math.abs(t), i = Math.floor(o), a = Math.floor((o - i) * 60), r = ((o - i) * 60 - a) * 60;
+  return c + i + "°" + String(a).padStart(2, "0") + "'" + r.toFixed(1).padStart(4, "0") + '"';
 }
 export {
-  oe as render
+  Ne as render
 };
 //# sourceMappingURL=widget.js.map

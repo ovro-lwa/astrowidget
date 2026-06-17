@@ -545,6 +545,7 @@ export async function render({ model, el }) {
 
     function draw() {
       if (aladin) {
+        syncViewRotationFromAladin();
         updateViewPlaneScales();
       }
 
@@ -784,6 +785,7 @@ export async function render({ model, el }) {
       });
       log("Aladin viewer created: " + initBg);
       applyBackgroundCuts();
+      updateViewPlaneScales();
     }
 
     // Handle background_survey changes
@@ -813,6 +815,7 @@ export async function render({ model, el }) {
           });
           log("Aladin loaded on demand: " + survey);
           applyBackgroundCuts();
+          updateViewPlaneScales();
         } catch (e) { log("Aladin load failed: " + e.message); }
       } else if (!survey) {
         container.style.background = "#000";
