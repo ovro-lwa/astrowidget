@@ -7,7 +7,9 @@ raw float32 bytes — no FITS serialization.
 
 from __future__ import annotations
 
+import os
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,6 +29,7 @@ _STATIC = Path(__file__).parent / "static"
 _JS_PATH = _STATIC / "widget.js"
 _VIEW_GESTURE_DEBOUNCE_S = 0.3
 _REPROJECT_MAP_CACHE_SIZE = 4
+_PROFILE_PUSH = os.environ.get("ASTROWIDGET_PROFILE_PUSH") == "1"
 
 
 class SkyWidget(anywidget.AnyWidget):
@@ -281,20 +284,26 @@ class SkyWidget(anywidget.AnyWidget):
             view_ra = float(wcs.wcs.crval[0])
             view_dec = float(wcs.wcs.crval[1])
 
-        if not should_skip_shader_reproject(wcs, view_ra, view_dec):
+        t_push = time.perf_counter()
+        skipped_reproject = should_skip_shader_reproject(wcs, view_ra, view_dec)
+        t_reproject = time.perf_counter()
+        if not skipped_reproject:
             data, wcs = self._reproject_with_cached_maps(data, wcs, view_ra, view_dec)
+        reproject_ms = (time.perf_counter() - t_reproject) * 1000.0
 
         self._wcs = wcs
         self._current_data = data
 
         limits = self._percentile_limits(data, percentile_low, percentile_high)
         cel = wcs.celestial
+        t_trait = time.perf_counter()
         with self.hold_trait_notifications():
             self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
             self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
             self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
             self.image_shape = tuple(int(x) for x in data.shape)
-            self.image_data = data.tobytes()
+            image_bytes = data.tobytes()
+            self.image_data = image_bytes
             if limits is not None:
                 self.vmin, self.vmax = limits
             if update_view:
@@ -304,6 +313,15 @@ class SkyWidget(anywidget.AnyWidget):
                 if fov is not None:
                     self.view_fov = float(fov.to(u.deg).value)
             self.image_revision += 1
+        trait_ms = (time.perf_counter() - t_trait) * 1000.0
+        if _PROFILE_PUSH:
+            self._profile_last_push = {
+                "bytes": len(image_bytes),
+                "reproject_ms": reproject_ms,
+                "trait_ms": trait_ms,
+                "total_ms": (time.perf_counter() - t_push) * 1000.0,
+                "skipped_reproject": skipped_reproject,
+            }
 
     def _on_slice_change(self, change) -> None:
         """Observer: update displayed image when time_idx or freq_idx changes."""
@@ -560,8 +578,12 @@ class SkyWidget(anywidget.AnyWidget):
                     f"freq_idx={int(freq_idx)}"
                 )
                 raise RuntimeError(msg)
+            t_update = time.perf_counter()
+            t_zarr = time.perf_counter()
+            slice_data = self._cube.image(self.time_idx, self.freq_idx)
+            zarr_ms = (time.perf_counter() - t_zarr) * 1000.0
             self._push_image_frame(
-                self._cube.image(self.time_idx, self.freq_idx),
+                slice_data,
                 self._display_wcs,
                 percentile_low=scale_low,
                 percentile_high=scale_high,
@@ -569,6 +591,11 @@ class SkyWidget(anywidget.AnyWidget):
                 fov=fov,
                 update_view=fov is not None or not use_view_lock or explicit_center,
             )
+            if _PROFILE_PUSH:
+                profile = dict(getattr(self, "_profile_last_push", {}))
+                profile["zarr_ms"] = zarr_ms
+                profile["total_ms"] = (time.perf_counter() - t_update) * 1000.0
+                self._profile_last_push = profile
         finally:
             self._suppress_slice_observer = False
             self._suppress_gesture_observer = False
