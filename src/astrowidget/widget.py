@@ -8,6 +8,7 @@ raw float32 bytes — no FITS serialization.
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 _STATIC = Path(__file__).parent / "static"
 _JS_PATH = _STATIC / "widget.js"
 _VIEW_GESTURE_DEBOUNCE_S = 0.3
+_REPROJECT_MAP_CACHE_SIZE = 4
 
 
 class SkyWidget(anywidget.AnyWidget):
@@ -117,8 +119,54 @@ class SkyWidget(anywidget.AnyWidget):
         self._suppress_slice_observer = False
         self._suppress_gesture_observer = False
         self._gesture_reproject_timer: threading.Timer | None = None
+        self._reproject_map_cache: OrderedDict[tuple, object] = OrderedDict()
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
         self.observe(self._on_view_gesture_revision, names=["view_gesture_revision"])
+
+    def _clear_reproject_map_cache(self) -> None:
+        self._reproject_map_cache.clear()
+
+    def _reproject_cache_key(
+        self,
+        wcs: WCS,
+        shape: tuple[int, int],
+        view_ra: float,
+        view_dec: float,
+    ) -> tuple:
+        from astrowidget.wcs import reproject_wcs_fingerprint
+
+        return (
+            int(shape[0]),
+            int(shape[1]),
+            round(float(view_ra), 5),
+            round(float(view_dec), 5),
+            reproject_wcs_fingerprint(wcs),
+        )
+
+    def _reproject_with_cached_maps(
+        self,
+        data: np.ndarray,
+        wcs: WCS,
+        view_ra: float,
+        view_dec: float,
+    ) -> tuple[np.ndarray, WCS]:
+        from astrowidget.wcs import apply_reproject_maps, build_reproject_maps
+
+        cache_key = self._reproject_cache_key(wcs, data.shape, view_ra, view_dec)
+        maps = self._reproject_map_cache.get(cache_key)
+        if maps is None:
+            maps = build_reproject_maps(
+                wcs,
+                data.shape,
+                crval_ra=view_ra,
+                crval_dec=view_dec,
+            )
+            self._reproject_map_cache[cache_key] = maps
+            while len(self._reproject_map_cache) > _REPROJECT_MAP_CACHE_SIZE:
+                self._reproject_map_cache.popitem(last=False)
+        else:
+            self._reproject_map_cache.move_to_end(cache_key)
+        return apply_reproject_maps(data, maps), maps.wcs_out
 
     def _update_display_wcs(self) -> None:
         """Rebuild display WCS for the current time slice (strided to cube resolution)."""
@@ -182,10 +230,7 @@ class SkyWidget(anywidget.AnyWidget):
         if data.dtype != np.float32:
             data = data.astype(np.float32)
 
-        from astrowidget.wcs import (
-            reproject_for_shader_display,
-            wcs_projection_matches_naive_shader,
-        )
+        from astrowidget.wcs import should_skip_shader_reproject
 
         if center is not None:
             view_ra = float(center.icrs.ra.deg)
@@ -194,16 +239,8 @@ class SkyWidget(anywidget.AnyWidget):
             view_ra = float(wcs.wcs.crval[0])
             view_dec = float(wcs.wcs.crval[1])
 
-        # Catalog / target views fix view_ra/dec on the sky; the slice WCS still
-        # carries zenith-tracking CRVAL. Always reproject so the WebGL grid
-        # matches the view center (naive-match alone is for zenith-only views).
-        if center is not None or not wcs_projection_matches_naive_shader(wcs):
-            data, wcs = reproject_for_shader_display(
-                data,
-                wcs,
-                crval_ra=view_ra,
-                crval_dec=view_dec,
-            )
+        if not should_skip_shader_reproject(wcs, view_ra, view_dec):
+            data, wcs = self._reproject_with_cached_maps(data, wcs, view_ra, view_dec)
 
         self._wcs = wcs
         self._current_data = data
@@ -321,6 +358,7 @@ class SkyWidget(anywidget.AnyWidget):
 
     def clear_image(self) -> None:
         """Remove the radio overlay until the next :meth:`update_slice` / :meth:`set_image`."""
+        self._clear_reproject_map_cache()
         with self.hold_trait_notifications():
             self.image_data = b""
             self.image_shape = (0, 0)
@@ -374,6 +412,7 @@ class SkyWidget(anywidget.AnyWidget):
         from astrowidget.cube import PreloadedCube
         from astrowidget.wcs import get_wcs
 
+        self._clear_reproject_map_cache()
         self._ds = ds
         self._var = var
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
