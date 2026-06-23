@@ -14,6 +14,8 @@ from astrowidget import SkyWidget
 from astrowidget.wcs import (
     apply_reproject_maps,
     build_reproject_maps,
+    build_reproject_maps_from_view_geometry,
+    build_view_reproject_geometry,
     reproject_for_shader_display,
     should_skip_shader_reproject,
     wcs_projection_matches_naive_shader,
@@ -79,12 +81,12 @@ def test_reproject_map_cache_reused_on_same_slice() -> None:
     widget.set_dataset(ds, max_size=64, defer_display=True)
 
     with patch(
-        "astrowidget.wcs.build_reproject_maps",
-        wraps=build_reproject_maps,
-    ) as build_mock:
+        "astrowidget.wcs.build_reproject_maps_from_view_geometry",
+        wraps=build_reproject_maps_from_view_geometry,
+    ) as from_geom_mock:
         widget.update_slice(0, 0, center=catalog, fov=8 * u.deg)
         widget.update_slice(0, 0, center=catalog, fov=8 * u.deg)
-        assert build_mock.call_count == 1
+        assert from_geom_mock.call_count == 1
 
 
 def test_reproject_map_cache_rebuilds_when_time_wcs_changes() -> None:
@@ -94,15 +96,48 @@ def test_reproject_map_cache_rebuilds_when_time_wcs_changes() -> None:
     widget.set_dataset(ds, max_size=64, defer_display=True)
 
     with patch(
-        "astrowidget.wcs.build_reproject_maps",
-        wraps=build_reproject_maps,
-    ) as build_mock:
+        "astrowidget.wcs.build_reproject_maps_from_view_geometry",
+        wraps=build_reproject_maps_from_view_geometry,
+    ) as from_geom_mock:
         widget.update_slice(0, 0, center=catalog, fov=8 * u.deg)
         widget.update_slice(2, 0, center=catalog, fov=8 * u.deg)
-        assert build_mock.call_count == 2
+        assert from_geom_mock.call_count == 2
 
     assert widget.view_ra == pytest.approx(97.67, abs=0.01)
     assert widget.crval[0] == pytest.approx(97.67, abs=0.01)
+
+
+def test_view_geometry_reused_on_time_scrub() -> None:
+    ds = _make_per_time_wcs_dataset(3)
+    catalog = SkyCoord(97.67 * u.deg, 25.39 * u.deg, frame="icrs")
+    widget = SkyWidget()
+    widget.set_dataset(ds, max_size=64, defer_display=True)
+
+    with patch(
+        "astrowidget.wcs.build_view_reproject_geometry",
+        wraps=build_view_reproject_geometry,
+    ) as view_geom_mock:
+        widget.update_slice(0, 0, center=catalog, fov=8 * u.deg)
+        widget.update_slice(1, 0, center=catalog, fov=8 * u.deg)
+        widget.update_slice(2, 0, center=catalog, fov=8 * u.deg)
+        assert view_geom_mock.call_count == 1
+
+
+def test_view_geometry_invalidated_on_goto() -> None:
+    ds = _make_per_time_wcs_dataset(3)
+    catalog = SkyCoord(97.67 * u.deg, 25.39 * u.deg, frame="icrs")
+    other = SkyCoord(100.0 * u.deg, 30.0 * u.deg, frame="icrs")
+    widget = SkyWidget()
+    widget.set_dataset(ds, max_size=64, defer_display=True)
+
+    with patch(
+        "astrowidget.wcs.build_view_reproject_geometry",
+        wraps=build_view_reproject_geometry,
+    ) as view_geom_mock:
+        widget.update_slice(0, 0, center=catalog, fov=8 * u.deg)
+        widget.goto(other)
+        widget.update_slice(0, 0, center=other, fov=8 * u.deg)
+        assert view_geom_mock.call_count == 2
 
 
 def test_reproject_map_cache_evicts_oldest_entry() -> None:

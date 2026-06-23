@@ -17,14 +17,19 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ReprojectMaps",
+    "ViewReprojectGeometry",
     "angular_separation_deg",
     "apply_reproject_maps",
     "adjust_wcs_for_array_stride",
     "build_reproject_maps",
+    "build_reproject_maps_from_view_geometry",
+    "build_view_reproject_geometry",
     "get_wcs",
     "reproject_for_shader_display",
+    "reproject_output_scale_fingerprint",
     "reproject_wcs_fingerprint",
     "should_skip_shader_reproject",
+    "view_reproject_geometry_key",
     "wcs_projection_matches_naive_shader",
 ]
 
@@ -364,24 +369,50 @@ def _make_naive_sin_wcs(
     return out
 
 
-@dataclass
-class ReprojectMaps:
-    """Precomputed sampling geometry for :func:`apply_reproject_maps`."""
+def reproject_output_scale_fingerprint(wcs: AstropyWCS) -> tuple[float, ...]:
+    """Pixel-scale part of the output shader grid (independent of source CRVAL)."""
+    cel = wcs.celestial
+    return (
+        round(float(cel.wcs.cdelt[0]), 8),
+        round(float(cel.wcs.cdelt[1]), 8),
+        round(float(cel.wcs.crpix[0]), 4),
+        round(float(cel.wcs.crpix[1]), 4),
+    )
 
-    src_l: np.ndarray
-    src_m: np.ndarray
-    near_hemisphere: np.ndarray
+
+def view_reproject_geometry_key(
+    shape: tuple[int, int],
+    view_ra: float,
+    view_dec: float,
+    wcs: AstropyWCS,
+) -> tuple[int, int, float, float, tuple[float, ...]]:
+    """Hashable key for view-fixed output tangent-plane geometry."""
+    return (
+        int(shape[0]),
+        int(shape[1]),
+        round(float(view_ra), 5),
+        round(float(view_dec), 5),
+        reproject_output_scale_fingerprint(wcs),
+    )
+
+
+@dataclass
+class ViewReprojectGeometry:
+    """Output tangent-plane world coordinates for a fixed catalog/view center."""
+
+    world_ra: np.ndarray
+    world_dec: np.ndarray
     wcs_out: AstropyWCS
 
 
-def build_reproject_maps(
+def build_view_reproject_geometry(
     wcs_src: AstropyWCS,
     shape: tuple[int, int],
     *,
     crval_ra: float,
     crval_dec: float,
-) -> ReprojectMaps:
-    """Build coordinate maps for shader reprojection (no data resampling)."""
+) -> ViewReprojectGeometry:
+    """Build the view-centered output grid (meshgrid + world coords only)."""
     if len(shape) != 2:
         msg = f"shape must be (n_l, n_m), got {shape!r}"
         raise ValueError(msg)
@@ -402,13 +433,32 @@ def build_reproject_maps(
     )
     l_plane, m_plane = _naive_sin_lm_from_pixel(wcs_out, ll, mm)
     world_ra, world_dec = _naive_sin_lm_to_world(wcs_out, l_plane, m_plane)
-    src_l, src_m = wcs_src.all_world2pix(world_ra, world_dec, 0)
+    return ViewReprojectGeometry(
+        world_ra=world_ra,
+        world_dec=world_dec,
+        wcs_out=wcs_out,
+    )
 
+
+def build_reproject_maps_from_view_geometry(
+    wcs_src: AstropyWCS,
+    geometry: ViewReprojectGeometry,
+) -> ReprojectMaps:
+    """Sample *wcs_src* onto a precomputed view-centered output grid."""
+    if not wcs_src.has_celestial:
+        msg = "wcs_src must have celestial axes"
+        raise ValueError(msg)
+
+    src_l, src_m = wcs_src.all_world2pix(
+        geometry.world_ra,
+        geometry.world_dec,
+        0,
+    )
     src_crval = wcs_src.celestial.wcs.crval
     ra0 = np.deg2rad(float(src_crval[0]))
     dec0 = np.deg2rad(float(src_crval[1]))
-    ra_rad = np.deg2rad(world_ra)
-    dec_rad = np.deg2rad(world_dec)
+    ra_rad = np.deg2rad(geometry.world_ra)
+    dec_rad = np.deg2rad(geometry.world_dec)
     cos_sep = np.sin(dec_rad) * np.sin(dec0) + np.cos(dec_rad) * np.cos(dec0) * np.cos(
         ra_rad - ra0
     )
@@ -416,8 +466,37 @@ def build_reproject_maps(
         src_l=src_l,
         src_m=src_m,
         near_hemisphere=cos_sep > 0.0,
-        wcs_out=wcs_out,
+        wcs_out=geometry.wcs_out,
     )
+
+
+@dataclass
+class ReprojectMaps:
+    """Precomputed sampling geometry for :func:`apply_reproject_maps`."""
+
+    src_l: np.ndarray
+    src_m: np.ndarray
+    near_hemisphere: np.ndarray
+    wcs_out: AstropyWCS
+
+
+def build_reproject_maps(
+    wcs_src: AstropyWCS,
+    shape: tuple[int, int],
+    *,
+    crval_ra: float,
+    crval_dec: float,
+    view_geometry: ViewReprojectGeometry | None = None,
+) -> ReprojectMaps:
+    """Build coordinate maps for shader reprojection (no data resampling)."""
+    if view_geometry is None:
+        view_geometry = build_view_reproject_geometry(
+            wcs_src,
+            shape,
+            crval_ra=crval_ra,
+            crval_dec=crval_dec,
+        )
+    return build_reproject_maps_from_view_geometry(wcs_src, view_geometry)
 
 
 def apply_reproject_maps(data: np.ndarray, maps: ReprojectMaps) -> np.ndarray:

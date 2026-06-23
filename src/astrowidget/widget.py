@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from astropy.coordinates import SkyCoord
     from astropy.wcs import WCS
 
+    from astrowidget.wcs import ViewReprojectGeometry
+
 _STATIC = Path(__file__).parent / "static"
 _JS_PATH = _STATIC / "widget.js"
 _VIEW_GESTURE_DEBOUNCE_S = 0.3
@@ -120,11 +122,25 @@ class SkyWidget(anywidget.AnyWidget):
         self._suppress_gesture_observer = False
         self._gesture_reproject_timer: threading.Timer | None = None
         self._reproject_map_cache: OrderedDict[tuple, object] = OrderedDict()
+        self._view_geometry_cache: ViewReprojectGeometry | None = None
+        self._view_geometry_key: tuple | None = None
+        self._last_reproject_view: tuple[float, float] | None = None
+        self._last_reproject_shape: tuple[int, int] | None = None
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
         self.observe(self._on_view_gesture_revision, names=["view_gesture_revision"])
 
     def _clear_reproject_map_cache(self) -> None:
         self._reproject_map_cache.clear()
+
+    def _clear_view_geometry_cache(self) -> None:
+        self._view_geometry_cache = None
+        self._view_geometry_key = None
+        self._last_reproject_view = None
+        self._last_reproject_shape = None
+
+    def _clear_reproject_caches(self) -> None:
+        self._clear_reproject_map_cache()
+        self._clear_view_geometry_cache()
 
     def _reproject_cache_key(
         self,
@@ -143,6 +159,31 @@ class SkyWidget(anywidget.AnyWidget):
             reproject_wcs_fingerprint(wcs),
         )
 
+    def _get_or_build_view_geometry(
+        self,
+        wcs: WCS,
+        shape: tuple[int, int],
+        view_ra: float,
+        view_dec: float,
+    ) -> ViewReprojectGeometry:
+        from astrowidget.wcs import build_view_reproject_geometry, view_reproject_geometry_key
+
+        geom_key = view_reproject_geometry_key(shape, view_ra, view_dec, wcs)
+        if self._view_geometry_key == geom_key and self._view_geometry_cache is not None:
+            return self._view_geometry_cache
+
+        geometry = build_view_reproject_geometry(
+            wcs,
+            shape,
+            crval_ra=view_ra,
+            crval_dec=view_dec,
+        )
+        self._view_geometry_cache = geometry
+        self._view_geometry_key = geom_key
+        self._last_reproject_view = (round(float(view_ra), 5), round(float(view_dec), 5))
+        self._last_reproject_shape = (int(shape[0]), int(shape[1]))
+        return geometry
+
     def _reproject_with_cached_maps(
         self,
         data: np.ndarray,
@@ -150,17 +191,18 @@ class SkyWidget(anywidget.AnyWidget):
         view_ra: float,
         view_dec: float,
     ) -> tuple[np.ndarray, WCS]:
-        from astrowidget.wcs import apply_reproject_maps, build_reproject_maps
+        from astrowidget.wcs import (
+            apply_reproject_maps,
+            build_reproject_maps_from_view_geometry,
+        )
 
         cache_key = self._reproject_cache_key(wcs, data.shape, view_ra, view_dec)
         maps = self._reproject_map_cache.get(cache_key)
         if maps is None:
-            maps = build_reproject_maps(
-                wcs,
-                data.shape,
-                crval_ra=view_ra,
-                crval_dec=view_dec,
+            view_geometry = self._get_or_build_view_geometry(
+                wcs, data.shape, view_ra, view_dec
             )
+            maps = build_reproject_maps_from_view_geometry(wcs, view_geometry)
             self._reproject_map_cache[cache_key] = maps
             while len(self._reproject_map_cache) > _REPROJECT_MAP_CACHE_SIZE:
                 self._reproject_map_cache.popitem(last=False)
@@ -324,6 +366,7 @@ class SkyWidget(anywidget.AnyWidget):
         """Debounced handler: reproject overlay to current view after pan/zoom."""
         if self._suppress_gesture_observer or not self.overlay_view_lock:
             return
+        self._clear_view_geometry_cache()
         if self._cube is None or self.image_shape == (0, 0):
             return
         self._schedule_reproject_at_view()
@@ -358,7 +401,7 @@ class SkyWidget(anywidget.AnyWidget):
 
     def clear_image(self) -> None:
         """Remove the radio overlay until the next :meth:`update_slice` / :meth:`set_image`."""
-        self._clear_reproject_map_cache()
+        self._clear_reproject_caches()
         with self.hold_trait_notifications():
             self.image_data = b""
             self.image_shape = (0, 0)
@@ -376,6 +419,7 @@ class SkyWidget(anywidget.AnyWidget):
         """
         import astropy.units as u
 
+        self._clear_view_geometry_cache()
         self.view_ra = float(target.icrs.ra.deg)
         self.view_dec = float(target.icrs.dec.deg)
         if fov is not None:
@@ -412,7 +456,7 @@ class SkyWidget(anywidget.AnyWidget):
         from astrowidget.cube import PreloadedCube
         from astrowidget.wcs import get_wcs
 
-        self._clear_reproject_map_cache()
+        self._clear_reproject_caches()
         self._ds = ds
         self._var = var
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
