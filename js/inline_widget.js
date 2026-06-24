@@ -441,7 +441,9 @@ export async function render({ model, el }) {
     let vmin = 0, vmax = 1, opacity = 1, stretch = 0, showGrid = 1;
     let dragging = false;
     let pendingPan = false;
-    let userInteracting = false;  // true during drag and briefly after mouseup
+    let boxing = false;
+    // Block Python view echo briefly after JS pushes view_ra/dec/fov (not on click-only).
+    let suppressPythonViewSync = false;
     let interactionTimer = null;
     let crosshairRA = -999, crosshairDec = -999;
     let crosshairScreenX = -999, crosshairScreenY = -999;
@@ -451,7 +453,26 @@ export async function render({ model, el }) {
     let mode = "pan";
     // Store initial view for reset
     let initialRA = 0, initialDec = 0, initialFov = Math.PI;
-    let boxStartX = 0, boxStartY = 0, boxing = false;
+    let boxStartX = 0, boxStartY = 0;
+
+    function armPythonViewSyncSuppress() {
+      if (interactionTimer) clearTimeout(interactionTimer);
+      suppressPythonViewSync = true;
+      interactionTimer = setTimeout(() => { suppressPythonViewSync = false; }, 500);
+    }
+
+    /** Push local view to Python; arm suppress first so partial trait echoes are ignored. */
+    function pushViewToModel() {
+      armPythonViewSyncSuppress();
+      model.set("view_ra", viewRA / DEG2RAD);
+      model.set("view_dec", viewDec / DEG2RAD);
+      model.set("view_fov", viewFov / DEG2RAD);
+      model.save_changes();
+    }
+
+    function shouldApplyPythonView() {
+      return !suppressPythonViewSync && !dragging && !boxing;
+    }
 
     function setMode(m) {
       mode = m;
@@ -464,16 +485,10 @@ export async function render({ model, el }) {
     btnPan.addEventListener("click", () => setMode("pan"));
     btnZoom.addEventListener("click", () => setMode("boxzoom"));
     btnReset.addEventListener("click", () => {
-      userInteracting = true;
       viewRA = initialRA; viewDec = initialDec; viewFov = initialFov;
-      model.set("view_ra", viewRA/DEG2RAD);
-      model.set("view_dec", viewDec/DEG2RAD);
-      model.set("view_fov", viewFov/DEG2RAD);
-      model.save_changes();
+      pushViewToModel();
       syncAladin();
       draw();
-      if (interactionTimer) clearTimeout(interactionTimer);
-      interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
     });
 
     function uploadImage() {
@@ -498,7 +513,7 @@ export async function render({ model, el }) {
 
     function clampViewFov(fov) {
       const minFov = 0.001 * DEG2RAD;
-      const maxFov = aladin ? maxSinViewFov(getViewAspect()) : Math.PI;
+      const maxFov = maxSinViewFov(getViewAspect());
       return Math.max(minFov, Math.min(maxFov, fov));
     }
 
@@ -541,6 +556,14 @@ export async function render({ model, el }) {
         viewRotation
       );
       measuredViewScales = measured ?? null;
+    }
+
+    /** Pull Aladin WASM view state and remeasure overlay scales (HiPS is authoritative). */
+    function alignOverlayWithAladin() {
+      if (!aladin) return;
+      syncViewFromAladin();
+      measuredViewScales = null;
+      updateViewPlaneScales();
     }
 
     function draw() {
@@ -639,8 +662,7 @@ export async function render({ model, el }) {
     }
 
     function syncView() {
-      // Don't overwrite local view state during or shortly after user interaction
-      if (userInteracting) return;
+      if (!shouldApplyPythonView()) return;
       applyViewFromModel();
     }
 
@@ -708,22 +730,30 @@ export async function render({ model, el }) {
       // Do not syncAladin here — view_lock overlay swaps must not nudge HiPS FOV.
       // View changes still flow through change:view_* → onPythonViewChange.
       if (!model.get("overlay_view_lock")) {
-        applyViewFromModel();
-      }
-      // View-locked slice swaps keep the pan/zoom center fixed; remeasuring Aladin
-      // scales on every time/frequency change shifts the celestial crosshair.
-      if (!model.get("overlay_view_lock")) {
-        measuredViewScales = null;
-        if (aladin) updateViewPlaneScales();
+        if (shouldApplyPythonView()) {
+          applyViewFromModel();
+          if (aladin) syncAladin();
+        } else {
+          measuredViewScales = null;
+          if (aladin) updateViewPlaneScales();
+        }
       }
       scheduleDraw();
     });
     model.on("change:crosshair_ra", () => { syncCrosshairFromModel(); scheduleDraw(); });
     model.on("change:crosshair_dec", () => { syncCrosshairFromModel(); scheduleDraw(); });
-    function finishViewGesture() {
-      // After drag/zoom the Aladin WASM view is authoritative; then align HiPS + overlay.
-      if (aladin) syncViewFromAladin();
-      syncAladin();
+    function finishViewGesture({ pushToAladin = false } = {}) {
+      // After pan/wheel Aladin WASM already holds the view — only pull + remeasure.
+      // After box zoom or Python goto, push JS view into Aladin first.
+      if (aladin) {
+        if (pushToAladin) {
+          syncAladin();
+        } else {
+          syncViewFromAladin();
+          measuredViewScales = null;
+          updateViewPlaneScales();
+        }
+      }
       draw();
       if (model.get("overlay_view_lock")) {
         const rev = model.get("view_gesture_revision") || 0;
@@ -734,7 +764,7 @@ export async function render({ model, el }) {
 
     function onPythonViewChange() {
       // Python goto() / update_slice(center=) — not echo from an in-progress drag.
-      if (userInteracting) return;
+      if (!shouldApplyPythonView()) return;
       applyViewFromModel();
       measuredViewScales = null;
       syncAladin();
@@ -764,6 +794,8 @@ export async function render({ model, el }) {
         aladin.gotoRaDec(raDeg, decDeg);
       }
       aladin.setFoV(fovDeg);
+      syncViewFromAladin();
+      measuredViewScales = null;
       updateViewPlaneScales();
     }
 
@@ -811,7 +843,7 @@ export async function render({ model, el }) {
       });
       log("Aladin viewer created: " + initBg);
       applyBackgroundCuts();
-      updateViewPlaneScales();
+      alignOverlayWithAladin();
     }
 
     // Handle background_survey changes
@@ -841,7 +873,7 @@ export async function render({ model, el }) {
           });
           log("Aladin loaded on demand: " + survey);
           applyBackgroundCuts();
-          updateViewPlaneScales();
+          alignOverlayWithAladin();
         } catch (e) { log("Aladin load failed: " + e.message); }
       } else if (!survey) {
         container.style.background = "#000";
@@ -916,8 +948,6 @@ export async function render({ model, el }) {
     }
 
     canvas.addEventListener("mousedown", e => {
-      userInteracting = true;
-      if (interactionTimer) { clearTimeout(interactionTimer); interactionTimer = null; }
       mouseDownX = e.clientX; mouseDownY = e.clientY; didDrag = false;
 
       if (mode === "boxzoom") {
@@ -1005,7 +1035,6 @@ export async function render({ model, el }) {
         // Box zoom complete — compute FOV from selection
         boxing = false;
         boxOverlay.style.display = "none";
-        interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
 
         const dist = Math.sqrt((e.clientX-mouseDownX)**2 + (e.clientY-mouseDownY)**2);
         if (dist < 5) return; // too small, ignore
@@ -1034,20 +1063,14 @@ export async function render({ model, el }) {
         viewFov = 2 * Math.asin(Math.min(1, selFrac * Math.sin(half)));
         viewFov = clampViewFov(viewFov);
 
-        model.set("view_ra", viewRA/DEG2RAD);
-        model.set("view_dec", viewDec/DEG2RAD);
-        model.set("view_fov", viewFov/DEG2RAD);
-        model.save_changes();
-        finishViewGesture();
+        pushViewToModel();
+        finishViewGesture({ pushToAladin: true });
         return;
       }
       if (dragging || pendingPan) {
-        const wasDragging = dragging;
         dragging = false;
         pendingPan = false;
         canvas.style.cursor = mode === "pan" ? "grab" : "crosshair";
-        // Keep userInteracting true to absorb model echo, then release
-        interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
         // Distinguish click (< 3px movement) from drag
         const dist = Math.sqrt((e.clientX-mouseDownX)**2 + (e.clientY-mouseDownY)**2);
         if (dist < 3) {
@@ -1099,30 +1122,25 @@ export async function render({ model, el }) {
           crosshairScreenY = -999;
           crosshairRA = coord.ra;
           crosshairDec = coord.dec;
+          if (aladin) alignOverlayWithAladin();
           requestAnimationFrame(draw);
         } else {
-          model.set("view_ra", viewRA/DEG2RAD);
-          model.set("view_dec", viewDec/DEG2RAD);
-          model.save_changes();
-          finishViewGesture();
+          pushViewToModel();
+          finishViewGesture({ pushToAladin: false });
         }
       }
     });
     canvas.addEventListener("wheel", e => {
       e.preventDefault();
-      userInteracting = true;
-      if (interactionTimer) clearTimeout(interactionTimer);
       viewFov *= e.deltaY > 0 ? 1.1 : 1/1.1;
       viewFov = clampViewFov(viewFov);
-      model.set("view_fov", viewFov/DEG2RAD);
-      model.save_changes();
+      pushViewToModel();
       if (aladin) {
         aladin.setFoV(viewFov / DEG2RAD);
-        requestAnimationFrame(finishViewGesture);
+        requestAnimationFrame(() => finishViewGesture({ pushToAladin: false }));
       } else {
         requestAnimationFrame(draw);
       }
-      interactionTimer = setTimeout(() => { userInteracting = false; }, 500);
     }, { passive: false });
 
     // Resize

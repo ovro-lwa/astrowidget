@@ -40,22 +40,17 @@ export function viewFovAxes(viewFov, aspect) {
 }
 
 /**
- * Maximum SIN view FOV (largest canvas dimension, radians) keeping all corners
- * inside the unit projection disk (r ≤ 1).
+ * Maximum SIN view FOV (largest canvas dimension, radians).
  *
- * @param {number} aspect - Canvas width / height
+ * Returns 180° so the full visible hemisphere can be shown. Corner pixels may
+ * lie outside the unit projection disk (r > 1) on non-square views; the shader
+ * clips those regions transparently.
+ *
+ * @param {number} [_aspect] - Canvas width / height (unused; kept for API stability)
  * @returns {number}
  */
-export function maxSinViewFov(aspect) {
-  let lo = 0.001 * DEG2RAD;
-  let hi = Math.PI;
-  for (let i = 0; i < 40; i++) {
-    const mid = (lo + hi) * 0.5;
-    const { scaleX, scaleY } = viewFovAxes(mid, aspect);
-    if (Math.hypot(scaleX, scaleY) <= 1.0 + 1e-9) lo = mid;
-    else hi = mid;
-  }
-  return lo;
+export function maxSinViewFov(_aspect) {
+  return Math.PI;
 }
 
 /**
