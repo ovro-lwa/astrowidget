@@ -29,6 +29,19 @@ class TestSkyWidgetInit:
         assert w.colormap == "inferno"
         assert w.stretch == "linear"
         assert w.opacity == 1.0
+        assert w.crosshair_ra == -999.0
+        assert w.crosshair_dec == -999.0
+
+    def test_set_crosshair(self):
+        from astrowidget import SkyWidget
+        w = SkyWidget()
+        coord = SkyCoord(ra=83.6331 * u.deg, dec=22.0145 * u.deg)
+        w.set_crosshair(coord)
+        assert w.crosshair_ra == pytest.approx(83.6331)
+        assert w.crosshair_dec == pytest.approx(22.0145)
+        w.set_crosshair(None)
+        assert w.crosshair_ra == -999.0
+        assert w.crosshair_dec == -999.0
 
     def test_default_image_empty(self):
         from astrowidget import SkyWidget

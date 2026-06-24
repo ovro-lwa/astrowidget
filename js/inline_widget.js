@@ -662,11 +662,31 @@ export async function render({ model, el }) {
       });
     }
 
+    function syncCrosshairFromModel() {
+      const raDeg = model.get("crosshair_ra");
+      const decDeg = model.get("crosshair_dec");
+      if (
+        typeof raDeg !== "number" ||
+        typeof decDeg !== "number" ||
+        raDeg < -900 ||
+        decDeg < -900
+      ) {
+        crosshairRA = -999;
+        crosshairDec = -999;
+      } else {
+        crosshairRA = raDeg * DEG2RAD;
+        crosshairDec = decDeg * DEG2RAD;
+        crosshairScreenX = -999;
+        crosshairScreenY = -999;
+      }
+    }
+
     function syncAll() {
       syncDisplay();
       syncImage();
       syncWCS();
       syncView();
+      syncCrosshairFromModel();
       draw();
     }
 
@@ -690,10 +710,16 @@ export async function render({ model, el }) {
       if (!model.get("overlay_view_lock")) {
         applyViewFromModel();
       }
-      measuredViewScales = null;
-      if (aladin) updateViewPlaneScales();
+      // View-locked slice swaps keep the pan/zoom center fixed; remeasuring Aladin
+      // scales on every time/frequency change shifts the celestial crosshair.
+      if (!model.get("overlay_view_lock")) {
+        measuredViewScales = null;
+        if (aladin) updateViewPlaneScales();
+      }
       scheduleDraw();
     });
+    model.on("change:crosshair_ra", () => { syncCrosshairFromModel(); scheduleDraw(); });
+    model.on("change:crosshair_dec", () => { syncCrosshairFromModel(); scheduleDraw(); });
     function finishViewGesture() {
       // After drag/zoom the Aladin WASM view is authoritative; then align HiPS + overlay.
       if (aladin) syncViewFromAladin();

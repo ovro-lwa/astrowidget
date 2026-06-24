@@ -104,6 +104,10 @@ class SkyWidget(anywidget.AnyWidget):
     # Monotonic counter so every canvas click notifies Python even if (l, m) is unchanged.
     click_tick = traitlets.Int(0).tag(sync=True)
 
+    # --- Crosshair (Python → JS); values < -900 hide the marker ---
+    crosshair_ra = traitlets.Float(-999.0).tag(sync=True)
+    crosshair_dec = traitlets.Float(-999.0).tag(sync=True)
+
     # --- Slice indices (wired to PreloadedCube) ---
     time_idx = traitlets.Int(0).tag(sync=True)
     freq_idx = traitlets.Int(0).tag(sync=True)
@@ -424,6 +428,16 @@ class SkyWidget(anywidget.AnyWidget):
             self.image_data = b""
             self.image_shape = (0, 0)
             self.image_revision += 1
+
+    def set_crosshair(self, coord: SkyCoord | None) -> None:
+        """Show a celestial crosshair at ``coord``, or hide it when ``coord`` is None."""
+        if coord is None:
+            self.crosshair_ra = -999.0
+            self.crosshair_dec = -999.0
+            return
+        icrs = coord.icrs
+        self.crosshair_ra = float(icrs.ra.deg)
+        self.crosshair_dec = float(icrs.dec.deg)
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
