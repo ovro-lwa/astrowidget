@@ -191,19 +191,19 @@ describe("SIN view roundtrip", () => {
 });
 
 describe("maxSinViewFov", () => {
-  it("keeps unit-aspect corners inside the SIN disk", () => {
+  it("allows the full 180° hemisphere on unit aspect", () => {
     const maxFov = maxSinViewFov(1.0);
+    expect(maxFov).toBeCloseTo(Math.PI, 10);
     const { scaleX, scaleY } = viewFovAxes(maxFov, 1.0);
-    expect(Math.hypot(scaleX, scaleY)).toBeLessThanOrEqual(1.0 + 1e-9);
-    const over = viewFovAxes(maxFov * 1.01, 1.0);
-    expect(Math.hypot(over.scaleX, over.scaleY)).toBeGreaterThan(1.0);
+    expect(scaleX).toBeCloseTo(1, 10);
+    expect(scaleY).toBeCloseTo(1, 10);
   });
 
-  it("limits wide-aspect views below 180°", () => {
+  it("allows 180° on wide aspect (corners may clip in the shader)", () => {
     const maxFov = maxSinViewFov(1.5);
-    expect(maxFov * RAD2DEG).toBeLessThan(180);
+    expect(maxFov).toBeCloseTo(Math.PI, 10);
     const { scaleX, scaleY } = viewFovAxes(maxFov, 1.5);
-    expect(Math.hypot(scaleX, scaleY)).toBeLessThanOrEqual(1.0 + 1e-9);
+    expect(Math.hypot(scaleX, scaleY)).toBeGreaterThan(1.0);
   });
 });
 

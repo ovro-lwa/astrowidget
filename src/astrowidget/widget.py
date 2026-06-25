@@ -7,7 +7,10 @@ raw float32 bytes — no FITS serialization.
 
 from __future__ import annotations
 
+import os
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,9 +23,13 @@ if TYPE_CHECKING:
     from astropy.coordinates import SkyCoord
     from astropy.wcs import WCS
 
+    from astrowidget.wcs import ViewReprojectGeometry
+
 _STATIC = Path(__file__).parent / "static"
 _JS_PATH = _STATIC / "widget.js"
 _VIEW_GESTURE_DEBOUNCE_S = 0.3
+_REPROJECT_MAP_CACHE_SIZE = 4
+_PROFILE_PUSH = os.environ.get("ASTROWIDGET_PROFILE_PUSH") == "1"
 
 
 class SkyWidget(anywidget.AnyWidget):
@@ -97,6 +104,10 @@ class SkyWidget(anywidget.AnyWidget):
     # Monotonic counter so every canvas click notifies Python even if (l, m) is unchanged.
     click_tick = traitlets.Int(0).tag(sync=True)
 
+    # --- Crosshair (Python → JS); values < -900 hide the marker ---
+    crosshair_ra = traitlets.Float(-999.0).tag(sync=True)
+    crosshair_dec = traitlets.Float(-999.0).tag(sync=True)
+
     # --- Slice indices (wired to PreloadedCube) ---
     time_idx = traitlets.Int(0).tag(sync=True)
     freq_idx = traitlets.Int(0).tag(sync=True)
@@ -117,8 +128,94 @@ class SkyWidget(anywidget.AnyWidget):
         self._suppress_slice_observer = False
         self._suppress_gesture_observer = False
         self._gesture_reproject_timer: threading.Timer | None = None
+        self._reproject_map_cache: OrderedDict[tuple, object] = OrderedDict()
+        self._view_geometry_cache: ViewReprojectGeometry | None = None
+        self._view_geometry_key: tuple | None = None
+        self._last_reproject_view: tuple[float, float] | None = None
+        self._last_reproject_shape: tuple[int, int] | None = None
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
         self.observe(self._on_view_gesture_revision, names=["view_gesture_revision"])
+
+    def _clear_reproject_map_cache(self) -> None:
+        self._reproject_map_cache.clear()
+
+    def _clear_view_geometry_cache(self) -> None:
+        self._view_geometry_cache = None
+        self._view_geometry_key = None
+        self._last_reproject_view = None
+        self._last_reproject_shape = None
+
+    def _clear_reproject_caches(self) -> None:
+        self._clear_reproject_map_cache()
+        self._clear_view_geometry_cache()
+
+    def _reproject_cache_key(
+        self,
+        wcs: WCS,
+        shape: tuple[int, int],
+        view_ra: float,
+        view_dec: float,
+    ) -> tuple:
+        from astrowidget.wcs import reproject_wcs_fingerprint
+
+        return (
+            int(shape[0]),
+            int(shape[1]),
+            round(float(view_ra), 5),
+            round(float(view_dec), 5),
+            reproject_wcs_fingerprint(wcs),
+        )
+
+    def _get_or_build_view_geometry(
+        self,
+        wcs: WCS,
+        shape: tuple[int, int],
+        view_ra: float,
+        view_dec: float,
+    ) -> ViewReprojectGeometry:
+        from astrowidget.wcs import build_view_reproject_geometry, view_reproject_geometry_key
+
+        geom_key = view_reproject_geometry_key(shape, view_ra, view_dec, wcs)
+        if self._view_geometry_key == geom_key and self._view_geometry_cache is not None:
+            return self._view_geometry_cache
+
+        geometry = build_view_reproject_geometry(
+            wcs,
+            shape,
+            crval_ra=view_ra,
+            crval_dec=view_dec,
+        )
+        self._view_geometry_cache = geometry
+        self._view_geometry_key = geom_key
+        self._last_reproject_view = (round(float(view_ra), 5), round(float(view_dec), 5))
+        self._last_reproject_shape = (int(shape[0]), int(shape[1]))
+        return geometry
+
+    def _reproject_with_cached_maps(
+        self,
+        data: np.ndarray,
+        wcs: WCS,
+        view_ra: float,
+        view_dec: float,
+    ) -> tuple[np.ndarray, WCS]:
+        from astrowidget.wcs import (
+            apply_reproject_maps,
+            build_reproject_maps_from_view_geometry,
+        )
+
+        cache_key = self._reproject_cache_key(wcs, data.shape, view_ra, view_dec)
+        maps = self._reproject_map_cache.get(cache_key)
+        if maps is None:
+            view_geometry = self._get_or_build_view_geometry(
+                wcs, data.shape, view_ra, view_dec
+            )
+            maps = build_reproject_maps_from_view_geometry(wcs, view_geometry)
+            self._reproject_map_cache[cache_key] = maps
+            while len(self._reproject_map_cache) > _REPROJECT_MAP_CACHE_SIZE:
+                self._reproject_map_cache.popitem(last=False)
+        else:
+            self._reproject_map_cache.move_to_end(cache_key)
+        return apply_reproject_maps(data, maps), maps.wcs_out
 
     def _update_display_wcs(self) -> None:
         """Rebuild display WCS for the current time slice (strided to cube resolution)."""
@@ -182,10 +279,7 @@ class SkyWidget(anywidget.AnyWidget):
         if data.dtype != np.float32:
             data = data.astype(np.float32)
 
-        from astrowidget.wcs import (
-            reproject_for_shader_display,
-            wcs_projection_matches_naive_shader,
-        )
+        from astrowidget.wcs import should_skip_shader_reproject
 
         if center is not None:
             view_ra = float(center.icrs.ra.deg)
@@ -194,28 +288,26 @@ class SkyWidget(anywidget.AnyWidget):
             view_ra = float(wcs.wcs.crval[0])
             view_dec = float(wcs.wcs.crval[1])
 
-        # Catalog / target views fix view_ra/dec on the sky; the slice WCS still
-        # carries zenith-tracking CRVAL. Always reproject so the WebGL grid
-        # matches the view center (naive-match alone is for zenith-only views).
-        if center is not None or not wcs_projection_matches_naive_shader(wcs):
-            data, wcs = reproject_for_shader_display(
-                data,
-                wcs,
-                crval_ra=view_ra,
-                crval_dec=view_dec,
-            )
+        t_push = time.perf_counter()
+        skipped_reproject = should_skip_shader_reproject(wcs, view_ra, view_dec)
+        t_reproject = time.perf_counter()
+        if not skipped_reproject:
+            data, wcs = self._reproject_with_cached_maps(data, wcs, view_ra, view_dec)
+        reproject_ms = (time.perf_counter() - t_reproject) * 1000.0
 
         self._wcs = wcs
         self._current_data = data
 
         limits = self._percentile_limits(data, percentile_low, percentile_high)
         cel = wcs.celestial
+        t_trait = time.perf_counter()
         with self.hold_trait_notifications():
             self.crval = (float(cel.wcs.crval[0]), float(cel.wcs.crval[1]))
             self.cdelt = (float(cel.wcs.cdelt[0]), float(cel.wcs.cdelt[1]))
             self.crpix = (float(cel.wcs.crpix[0]), float(cel.wcs.crpix[1]))
             self.image_shape = tuple(int(x) for x in data.shape)
-            self.image_data = data.tobytes()
+            image_bytes = data.tobytes()
+            self.image_data = image_bytes
             if limits is not None:
                 self.vmin, self.vmax = limits
             if update_view:
@@ -225,6 +317,15 @@ class SkyWidget(anywidget.AnyWidget):
                 if fov is not None:
                     self.view_fov = float(fov.to(u.deg).value)
             self.image_revision += 1
+        trait_ms = (time.perf_counter() - t_trait) * 1000.0
+        if _PROFILE_PUSH:
+            self._profile_last_push = {
+                "bytes": len(image_bytes),
+                "reproject_ms": reproject_ms,
+                "trait_ms": trait_ms,
+                "total_ms": (time.perf_counter() - t_push) * 1000.0,
+                "skipped_reproject": skipped_reproject,
+            }
 
     def _on_slice_change(self, change) -> None:
         """Observer: update displayed image when time_idx or freq_idx changes."""
@@ -287,6 +388,7 @@ class SkyWidget(anywidget.AnyWidget):
         """Debounced handler: reproject overlay to current view after pan/zoom."""
         if self._suppress_gesture_observer or not self.overlay_view_lock:
             return
+        self._clear_view_geometry_cache()
         if self._cube is None or self.image_shape == (0, 0):
             return
         self._schedule_reproject_at_view()
@@ -321,10 +423,22 @@ class SkyWidget(anywidget.AnyWidget):
 
     def clear_image(self) -> None:
         """Remove the radio overlay until the next :meth:`update_slice` / :meth:`set_image`."""
+        self._clear_reproject_caches()
         with self.hold_trait_notifications():
             self.image_data = b""
             self.image_shape = (0, 0)
             self.image_revision += 1
+
+    def set_crosshair(self, coord: SkyCoord | None) -> None:
+        """Show a celestial crosshair at ``coord``, or hide it when ``coord`` is None."""
+        with self.hold_trait_notifications():
+            if coord is None:
+                self.crosshair_ra = -999.0
+                self.crosshair_dec = -999.0
+                return
+            icrs = coord.icrs
+            self.crosshair_ra = float(icrs.ra.deg)
+            self.crosshair_dec = float(icrs.dec.deg)
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
@@ -338,6 +452,7 @@ class SkyWidget(anywidget.AnyWidget):
         """
         import astropy.units as u
 
+        self._clear_view_geometry_cache()
         self.view_ra = float(target.icrs.ra.deg)
         self.view_dec = float(target.icrs.dec.deg)
         if fov is not None:
@@ -374,6 +489,7 @@ class SkyWidget(anywidget.AnyWidget):
         from astrowidget.cube import PreloadedCube
         from astrowidget.wcs import get_wcs
 
+        self._clear_reproject_caches()
         self._ds = ds
         self._var = var
         self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
@@ -477,8 +593,12 @@ class SkyWidget(anywidget.AnyWidget):
                     f"freq_idx={int(freq_idx)}"
                 )
                 raise RuntimeError(msg)
+            t_update = time.perf_counter()
+            t_zarr = time.perf_counter()
+            slice_data = self._cube.image(self.time_idx, self.freq_idx)
+            zarr_ms = (time.perf_counter() - t_zarr) * 1000.0
             self._push_image_frame(
-                self._cube.image(self.time_idx, self.freq_idx),
+                slice_data,
                 self._display_wcs,
                 percentile_low=scale_low,
                 percentile_high=scale_high,
@@ -486,6 +606,11 @@ class SkyWidget(anywidget.AnyWidget):
                 fov=fov,
                 update_view=fov is not None or not use_view_lock or explicit_center,
             )
+            if _PROFILE_PUSH:
+                profile = dict(getattr(self, "_profile_last_push", {}))
+                profile["zarr_ms"] = zarr_ms
+                profile["total_ms"] = (time.perf_counter() - t_update) * 1000.0
+                self._profile_last_push = profile
         finally:
             self._suppress_slice_observer = False
             self._suppress_gesture_observer = False

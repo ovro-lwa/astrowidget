@@ -6,6 +6,7 @@ FITS→zarr conversion. Adapted from ovro_lwa_portal.accessor._get_wcs.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -15,10 +16,21 @@ if TYPE_CHECKING:
     import xarray as xr
 
 __all__ = [
-    "get_wcs",
+    "ReprojectMaps",
+    "ViewReprojectGeometry",
+    "angular_separation_deg",
+    "apply_reproject_maps",
     "adjust_wcs_for_array_stride",
-    "wcs_projection_matches_naive_shader",
+    "build_reproject_maps",
+    "build_reproject_maps_from_view_geometry",
+    "build_view_reproject_geometry",
+    "get_wcs",
     "reproject_for_shader_display",
+    "reproject_output_scale_fingerprint",
+    "reproject_wcs_fingerprint",
+    "should_skip_shader_reproject",
+    "view_reproject_geometry_key",
+    "wcs_projection_matches_naive_shader",
 ]
 
 
@@ -262,6 +274,62 @@ def _naive_sin_world2pix(
     return float(px), float(py)
 
 
+def angular_separation_deg(
+    ra1_deg: float,
+    dec1_deg: float,
+    ra2_deg: float,
+    dec2_deg: float,
+) -> float:
+    """Great-circle separation between two ICRS positions, in degrees."""
+    from astropy.coordinates import angular_separation
+
+    sep_rad = angular_separation(
+        np.deg2rad(ra1_deg),
+        np.deg2rad(dec1_deg),
+        np.deg2rad(ra2_deg),
+        np.deg2rad(dec2_deg),
+    )
+    return float(np.rad2deg(sep_rad))
+
+
+def should_skip_shader_reproject(
+    wcs: AstropyWCS,
+    view_ra: float,
+    view_dec: float,
+    *,
+    atol_deg: float = 0.01,
+) -> bool:
+    """Return True when native slice WCS can be pushed without shader reproject.
+
+    Skips reprojection only when the WebGL naive SIN shader matches Astropy for
+    *wcs* and the view center is within *atol_deg* of the slice phase center.
+    """
+    if not wcs.has_celestial:
+        return True
+    if not wcs_projection_matches_naive_shader(wcs):
+        return False
+    crval = wcs.celestial.wcs.crval
+    return angular_separation_deg(
+        view_ra,
+        view_dec,
+        float(crval[0]),
+        float(crval[1]),
+    ) <= float(atol_deg)
+
+
+def reproject_wcs_fingerprint(wcs: AstropyWCS) -> tuple[float, ...]:
+    """Hashable WCS geometry for reproject map cache keys."""
+    cel = wcs.celestial
+    return (
+        round(float(cel.wcs.crval[0]), 6),
+        round(float(cel.wcs.crval[1]), 6),
+        round(float(cel.wcs.cdelt[0]), 8),
+        round(float(cel.wcs.cdelt[1]), 8),
+        round(float(cel.wcs.crpix[0]), 4),
+        round(float(cel.wcs.crpix[1]), 4),
+    )
+
+
 def wcs_projection_matches_naive_shader(
     wcs: AstropyWCS,
     *,
@@ -301,6 +369,155 @@ def _make_naive_sin_wcs(
     return out
 
 
+def reproject_output_scale_fingerprint(wcs: AstropyWCS) -> tuple[float, ...]:
+    """Pixel-scale part of the output shader grid (independent of source CRVAL)."""
+    cel = wcs.celestial
+    return (
+        round(float(cel.wcs.cdelt[0]), 8),
+        round(float(cel.wcs.cdelt[1]), 8),
+        round(float(cel.wcs.crpix[0]), 4),
+        round(float(cel.wcs.crpix[1]), 4),
+    )
+
+
+def view_reproject_geometry_key(
+    shape: tuple[int, int],
+    view_ra: float,
+    view_dec: float,
+    wcs: AstropyWCS,
+) -> tuple[int, int, float, float, tuple[float, ...]]:
+    """Hashable key for view-fixed output tangent-plane geometry."""
+    return (
+        int(shape[0]),
+        int(shape[1]),
+        round(float(view_ra), 5),
+        round(float(view_dec), 5),
+        reproject_output_scale_fingerprint(wcs),
+    )
+
+
+@dataclass
+class ViewReprojectGeometry:
+    """Output tangent-plane world coordinates for a fixed catalog/view center."""
+
+    world_ra: np.ndarray
+    world_dec: np.ndarray
+    wcs_out: AstropyWCS
+
+
+def build_view_reproject_geometry(
+    wcs_src: AstropyWCS,
+    shape: tuple[int, int],
+    *,
+    crval_ra: float,
+    crval_dec: float,
+) -> ViewReprojectGeometry:
+    """Build the view-centered output grid (meshgrid + world coords only)."""
+    if len(shape) != 2:
+        msg = f"shape must be (n_l, n_m), got {shape!r}"
+        raise ValueError(msg)
+    if not wcs_src.has_celestial:
+        msg = "wcs_src must have celestial axes"
+        raise ValueError(msg)
+
+    n_l, n_m = shape
+    ll, mm = np.meshgrid(
+        np.arange(n_l, dtype=np.float64),
+        np.arange(n_m, dtype=np.float64),
+        indexing="ij",
+    )
+    wcs_out = _make_naive_sin_wcs(
+        wcs_src,
+        crval_ra=crval_ra,
+        crval_dec=crval_dec,
+    )
+    l_plane, m_plane = _naive_sin_lm_from_pixel(wcs_out, ll, mm)
+    world_ra, world_dec = _naive_sin_lm_to_world(wcs_out, l_plane, m_plane)
+    return ViewReprojectGeometry(
+        world_ra=world_ra,
+        world_dec=world_dec,
+        wcs_out=wcs_out,
+    )
+
+
+def build_reproject_maps_from_view_geometry(
+    wcs_src: AstropyWCS,
+    geometry: ViewReprojectGeometry,
+) -> ReprojectMaps:
+    """Sample *wcs_src* onto a precomputed view-centered output grid."""
+    if not wcs_src.has_celestial:
+        msg = "wcs_src must have celestial axes"
+        raise ValueError(msg)
+
+    src_l, src_m = wcs_src.all_world2pix(
+        geometry.world_ra,
+        geometry.world_dec,
+        0,
+    )
+    src_crval = wcs_src.celestial.wcs.crval
+    ra0 = np.deg2rad(float(src_crval[0]))
+    dec0 = np.deg2rad(float(src_crval[1]))
+    ra_rad = np.deg2rad(geometry.world_ra)
+    dec_rad = np.deg2rad(geometry.world_dec)
+    cos_sep = np.sin(dec_rad) * np.sin(dec0) + np.cos(dec_rad) * np.cos(dec0) * np.cos(
+        ra_rad - ra0
+    )
+    return ReprojectMaps(
+        src_l=src_l,
+        src_m=src_m,
+        near_hemisphere=cos_sep > 0.0,
+        wcs_out=geometry.wcs_out,
+    )
+
+
+@dataclass
+class ReprojectMaps:
+    """Precomputed sampling geometry for :func:`apply_reproject_maps`."""
+
+    src_l: np.ndarray
+    src_m: np.ndarray
+    near_hemisphere: np.ndarray
+    wcs_out: AstropyWCS
+
+
+def build_reproject_maps(
+    wcs_src: AstropyWCS,
+    shape: tuple[int, int],
+    *,
+    crval_ra: float,
+    crval_dec: float,
+    view_geometry: ViewReprojectGeometry | None = None,
+) -> ReprojectMaps:
+    """Build coordinate maps for shader reprojection (no data resampling)."""
+    if view_geometry is None:
+        view_geometry = build_view_reproject_geometry(
+            wcs_src,
+            shape,
+            crval_ra=crval_ra,
+            crval_dec=crval_dec,
+        )
+    return build_reproject_maps_from_view_geometry(wcs_src, view_geometry)
+
+
+def apply_reproject_maps(data: np.ndarray, maps: ReprojectMaps) -> np.ndarray:
+    """Resample *data* using maps from :func:`build_reproject_maps`."""
+    from scipy.ndimage import map_coordinates
+
+    if data.ndim != 2:
+        msg = f"data must be 2D, got {data.ndim}D"
+        raise ValueError(msg)
+
+    out = map_coordinates(
+        data.astype(np.float64, copy=False),
+        [maps.src_l, maps.src_m],
+        order=1,
+        mode="constant",
+        cval=np.nan,
+    )
+    out[~maps.near_hemisphere] = np.nan
+    return out.astype(np.float32, copy=False)
+
+
 def reproject_for_shader_display(
     data: np.ndarray,
     wcs_src: AstropyWCS,
@@ -326,8 +543,6 @@ def reproject_for_shader_display(
     wcs_out : astropy.wcs.WCS
         Naive SIN WCS passed to the WebGL renderer.
     """
-    from scipy.ndimage import map_coordinates
-
     if data.ndim != 2:
         msg = f"data must be 2D, got {data.ndim}D"
         raise ValueError(msg)
@@ -335,42 +550,10 @@ def reproject_for_shader_display(
         msg = "wcs_src must have celestial axes"
         raise ValueError(msg)
 
-    n_l, n_m = data.shape
-    ll, mm = np.meshgrid(
-        np.arange(n_l, dtype=np.float64),
-        np.arange(n_m, dtype=np.float64),
-        indexing="ij",
-    )
-    wcs_out = _make_naive_sin_wcs(
+    maps = build_reproject_maps(
         wcs_src,
+        data.shape,
         crval_ra=crval_ra,
         crval_dec=crval_dec,
     )
-    l_plane, m_plane = _naive_sin_lm_from_pixel(wcs_out, ll, mm)
-    world_ra, world_dec = _naive_sin_lm_to_world(wcs_out, l_plane, m_plane)
-    src_l, src_m = wcs_src.all_world2pix(world_ra, world_dec, 0)
-    out = map_coordinates(
-        data.astype(np.float64, copy=False),
-        [src_l, src_m],
-        order=1,
-        mode="constant",
-        cval=np.nan,
-    )
-
-    # SIN (orthographic) is two-to-one over the sphere: a world point on the far
-    # hemisphere of the source tangent projects to the same intermediate (l, m)
-    # as its near-side mirror, so all_world2pix returns an in-bounds pixel and we
-    # would sample real data reflected across the pole (ghost overlay near, e.g.,
-    # the south celestial pole for a northern OVRO zenith snapshot). Reject any
-    # output sample whose world point is >= 90 deg from the source tangent.
-    src_crval = wcs_src.celestial.wcs.crval
-    ra0 = np.deg2rad(float(src_crval[0]))
-    dec0 = np.deg2rad(float(src_crval[1]))
-    ra_rad = np.deg2rad(world_ra)
-    dec_rad = np.deg2rad(world_dec)
-    cos_sep = np.sin(dec_rad) * np.sin(dec0) + np.cos(dec_rad) * np.cos(dec0) * np.cos(
-        ra_rad - ra0
-    )
-    out[~(cos_sep > 0.0)] = np.nan
-
-    return out.astype(np.float32, copy=False), wcs_out
+    return apply_reproject_maps(data, maps), maps.wcs_out
