@@ -709,6 +709,11 @@ export async function render({ model, el }) {
       syncWCS();
       syncView();
       syncCrosshairFromModel();
+      // syncView updates local viewRA/viewDec only; HiPS must follow on remount
+      // (Jupyter incremental change:view_* calls syncAladin via onPythonViewChange).
+      if (aladin && shouldApplyPythonView()) {
+        syncAladin();
+      }
       draw();
     }
 
@@ -831,6 +836,9 @@ export async function render({ model, el }) {
 
     // Initialize Aladin if background survey is set
     if (AladinLib && initBg) {
+      // Embedded ipywidgets state (bundle remount under panel serve) carries
+      // view_ra/view_dec before local JS vars are updated — read traits first.
+      applyViewFromModel();
       const hipsUrl = SURVEY_PRESETS[initBg] || initBg;
       const raDeg = ((viewRA / DEG2RAD) % 360 + 360) % 360;
       const decDeg = viewDec / DEG2RAD;
