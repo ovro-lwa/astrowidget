@@ -545,6 +545,7 @@ export async function render({ model, el }) {
 
     function draw() {
       if (aladin) {
+        syncViewRotationFromAladin();
         updateViewPlaneScales();
       }
 
@@ -784,6 +785,7 @@ export async function render({ model, el }) {
       });
       log("Aladin viewer created: " + initBg);
       applyBackgroundCuts();
+      updateViewPlaneScales();
     }
 
     // Handle background_survey changes
@@ -813,6 +815,7 @@ export async function render({ model, el }) {
           });
           log("Aladin loaded on demand: " + survey);
           applyBackgroundCuts();
+          updateViewPlaneScales();
         } catch (e) { log("Aladin load failed: " + e.message); }
       } else if (!survey) {
         container.style.background = "#000";
@@ -1063,10 +1066,11 @@ export async function render({ model, el }) {
           model.set("click_tick", (prevTick == null ? 0 : prevTick) + 1);
           model.save_changes();
 
-          // Fixed screen-space crosshair at click (HiPS-aligned coords above).
-          const screenPos = clientToScreen(e.clientX, e.clientY);
-          crosshairScreenX = screenPos.x;
-          crosshairScreenY = screenPos.y;
+          // Celestial-anchored crosshair: store the clicked sky coordinate and
+          // reproject to screen on every draw(). A fixed screen-space marker
+          // drifts on zoom/pan and is misleading.
+          crosshairScreenX = -999;
+          crosshairScreenY = -999;
           crosshairRA = coord.ra;
           crosshairDec = coord.dec;
           requestAnimationFrame(draw);
