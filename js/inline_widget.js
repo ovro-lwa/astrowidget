@@ -587,7 +587,6 @@ export async function render({ model, el }) {
       gl.uniform2f(loc.u_viewCenter, viewRA, viewDec);
       const scales = getViewPlaneScales();
       gl.uniform2f(loc.u_viewScale, scales.scaleX, scales.scaleY);
-      syncViewRotationFromAladin();
       gl.uniform1f(loc.u_viewRotation, viewRotation);
       gl.uniform1f(loc.u_fov, viewFov);
       gl.uniform1f(loc.u_opacity, opacity);
