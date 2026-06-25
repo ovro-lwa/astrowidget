@@ -431,13 +431,14 @@ class SkyWidget(anywidget.AnyWidget):
 
     def set_crosshair(self, coord: SkyCoord | None) -> None:
         """Show a celestial crosshair at ``coord``, or hide it when ``coord`` is None."""
-        if coord is None:
-            self.crosshair_ra = -999.0
-            self.crosshair_dec = -999.0
-            return
-        icrs = coord.icrs
-        self.crosshair_ra = float(icrs.ra.deg)
-        self.crosshair_dec = float(icrs.dec.deg)
+        with self.hold_trait_notifications():
+            if coord is None:
+                self.crosshair_ra = -999.0
+                self.crosshair_dec = -999.0
+                return
+            icrs = coord.icrs
+            self.crosshair_ra = float(icrs.ra.deg)
+            self.crosshair_dec = float(icrs.dec.deg)
 
     def goto(self, target: SkyCoord, fov: u.Quantity | None = None) -> None:
         """Navigate the view to a celestial target.
