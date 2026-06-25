@@ -842,7 +842,11 @@ export async function render({ model, el }) {
       });
       log("Aladin viewer created: " + initBg);
       applyBackgroundCuts();
+<<<<<<< HEAD
       alignOverlayWithAladin();
+=======
+      updateViewPlaneScales();
+>>>>>>> origin/main
     }
 
     // Handle background_survey changes
@@ -872,7 +876,11 @@ export async function render({ model, el }) {
           });
           log("Aladin loaded on demand: " + survey);
           applyBackgroundCuts();
+<<<<<<< HEAD
           alignOverlayWithAladin();
+=======
+          updateViewPlaneScales();
+>>>>>>> origin/main
         } catch (e) { log("Aladin load failed: " + e.message); }
       } else if (!survey) {
         container.style.background = "#000";

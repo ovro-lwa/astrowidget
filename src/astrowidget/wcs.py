@@ -556,4 +556,35 @@ def reproject_for_shader_display(
         crval_ra=crval_ra,
         crval_dec=crval_dec,
     )
+<<<<<<< HEAD
     return apply_reproject_maps(data, maps), maps.wcs_out
+=======
+    l_plane, m_plane = _naive_sin_lm_from_pixel(wcs_out, ll, mm)
+    world_ra, world_dec = _naive_sin_lm_to_world(wcs_out, l_plane, m_plane)
+    src_l, src_m = wcs_src.all_world2pix(world_ra, world_dec, 0)
+    out = map_coordinates(
+        data.astype(np.float64, copy=False),
+        [src_l, src_m],
+        order=1,
+        mode="constant",
+        cval=np.nan,
+    )
+
+    # SIN (orthographic) is two-to-one over the sphere: a world point on the far
+    # hemisphere of the source tangent projects to the same intermediate (l, m)
+    # as its near-side mirror, so all_world2pix returns an in-bounds pixel and we
+    # would sample real data reflected across the pole (ghost overlay near, e.g.,
+    # the south celestial pole for a northern OVRO zenith snapshot). Reject any
+    # output sample whose world point is >= 90 deg from the source tangent.
+    src_crval = wcs_src.celestial.wcs.crval
+    ra0 = np.deg2rad(float(src_crval[0]))
+    dec0 = np.deg2rad(float(src_crval[1]))
+    ra_rad = np.deg2rad(world_ra)
+    dec_rad = np.deg2rad(world_dec)
+    cos_sep = np.sin(dec_rad) * np.sin(dec0) + np.cos(dec_rad) * np.cos(dec0) * np.cos(
+        ra_rad - ra0
+    )
+    out[~(cos_sep > 0.0)] = np.nan
+
+    return out.astype(np.float32, copy=False), wcs_out
+>>>>>>> origin/main
