@@ -103,10 +103,33 @@ class TestPreloadedCube:
         cube = PreloadedCube(ds)
 
         # First access
-        img1 = cube._load_slice(0, 0)
+        img1 = cube._load_slice(0, 0, 0)
         # Second access should return the same object (cache hit)
-        img2 = cube._load_slice(0, 0)
+        img2 = cube._load_slice(0, 0, 0)
         assert img1 is img2
+
+    def test_load_slice_respects_polarization_index(self):
+        from astrowidget import PreloadedCube
+
+        data = np.zeros((1, 1, 2, 4, 4), dtype=np.float32)
+        data[0, 0, 0] = 1.0
+        data[0, 0, 1] = 9.0
+        ds = xr.Dataset(
+            data_vars={
+                "SKY": (["time", "frequency", "polarization", "l", "m"], data),
+            },
+            coords={
+                "time": [60000.0],
+                "frequency": [50e6],
+                "polarization": [1, 4],
+                "l": np.arange(4),
+                "m": np.arange(4),
+            },
+        )
+        cube = PreloadedCube(ds, pol=0)
+        assert float(cube.image(0, 0).max()) == pytest.approx(1.0)
+        cube.pol = 1
+        assert float(cube.image(0, 0).max()) == pytest.approx(9.0)
 
     def test_nearest_lm_idx(self):
         from astrowidget import PreloadedCube
