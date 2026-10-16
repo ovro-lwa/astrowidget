@@ -390,7 +390,10 @@ class SkyWidget(anywidget.AnyWidget):
         self._suppress_gesture_observer = True
         try:
             if time_idx is not None:
+                time_changed = int(time_idx) != int(self.time_idx)
                 self.time_idx = int(time_idx)
+                if time_changed or self._display_wcs is None:
+                    self._update_display_wcs()
             if freq_idx is not None:
                 self.freq_idx = int(freq_idx)
             self._push_image_frame(
