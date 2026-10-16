@@ -263,8 +263,14 @@ class SkyWidget(anywidget.AnyWidget):
         center: SkyCoord | None = None,
         fov: u.Quantity | None = None,
         update_view: bool = True,
+        reproject: bool = True,
     ) -> None:
-        """Send image bytes, WCS, scaling, and optional view in one frontend draw."""
+        """Send image bytes, WCS, scaling, and optional view in one frontend draw.
+
+        ``reproject=False`` uploads ``data`` and ``wcs`` unchanged. Callers that
+        already warped onto the naive SIN shader grid use this so a second
+        view-centered warp does not run.
+        """
         from astropy.wcs import WCS as AstropyWCS
 
         import astropy.units as u
@@ -279,20 +285,22 @@ class SkyWidget(anywidget.AnyWidget):
         if data.dtype != np.float32:
             data = data.astype(np.float32)
 
-        from astrowidget.wcs import should_skip_shader_reproject
-
-        if center is not None:
-            view_ra = float(center.icrs.ra.deg)
-            view_dec = float(center.icrs.dec.deg)
-        else:
-            view_ra = float(wcs.wcs.crval[0])
-            view_dec = float(wcs.wcs.crval[1])
-
         t_push = time.perf_counter()
-        skipped_reproject = should_skip_shader_reproject(wcs, view_ra, view_dec)
         t_reproject = time.perf_counter()
-        if not skipped_reproject:
-            data, wcs = self._reproject_with_cached_maps(data, wcs, view_ra, view_dec)
+        if reproject:
+            from astrowidget.wcs import should_skip_shader_reproject
+
+            if center is not None:
+                view_ra = float(center.icrs.ra.deg)
+                view_dec = float(center.icrs.dec.deg)
+            else:
+                view_ra = float(wcs.wcs.crval[0])
+                view_dec = float(wcs.wcs.crval[1])
+            skipped_reproject = should_skip_shader_reproject(wcs, view_ra, view_dec)
+            if not skipped_reproject:
+                data, wcs = self._reproject_with_cached_maps(data, wcs, view_ra, view_dec)
+        else:
+            skipped_reproject = True
         reproject_ms = (time.perf_counter() - t_reproject) * 1000.0
 
         self._wcs = wcs
@@ -360,6 +368,44 @@ class SkyWidget(anywidget.AnyWidget):
             raise ValueError(f"data must be 2D, got {data.ndim}D")
 
         self._push_image_frame(data, wcs)
+
+    def push_shader_frame(
+        self,
+        data: np.ndarray,
+        wcs: WCS,
+        *,
+        time_idx: int | None = None,
+        freq_idx: int | None = None,
+        percentile_low: float = 1.0,
+        percentile_high: float = 99.0,
+    ) -> None:
+        """Upload a frame that is already on the naive SIN shader grid.
+
+        Does not reproject and does not change ``view_ra``, ``view_dec``, or
+        ``view_fov``. ``time_idx`` / ``freq_idx`` update without firing the
+        full-plane slice observer.
+        """
+        suppress_slice = self._suppress_slice_observer
+        self._suppress_slice_observer = True
+        self._suppress_gesture_observer = True
+        try:
+            if time_idx is not None:
+                self.time_idx = int(time_idx)
+            if freq_idx is not None:
+                self.freq_idx = int(freq_idx)
+            self._push_image_frame(
+                data,
+                wcs,
+                percentile_low=percentile_low,
+                percentile_high=percentile_high,
+                center=None,
+                fov=None,
+                update_view=False,
+                reproject=False,
+            )
+        finally:
+            self._suppress_slice_observer = suppress_slice
+            self._suppress_gesture_observer = False
 
     def view_center_skycoord(self) -> SkyCoord:
         """Return the current view center as an ICRS sky coordinate."""
