@@ -141,6 +141,7 @@ class SkyWidget(anywidget.AnyWidget):
         self._ds = None
         self._var = "SKY"
         self._display_wcs = None
+        self._display_wcs_time: int | None = None
         self._full_wcs = None
         self._frame_window: CubeWindow | None = None
         self._frame_center: tuple[float, float] | None = None
@@ -269,17 +270,27 @@ class SkyWidget(anywidget.AnyWidget):
             self._reproject_map_cache.move_to_end(cache_key)
         return apply_reproject_maps(data, maps), maps.wcs_out
 
-    def _update_display_wcs(self) -> None:
-        """Rebuild display WCS for the current time slice (strided to cube resolution)."""
+    def _update_display_wcs(self, *, generation: int | None = None) -> None:
+        """Rebuild display WCS for the current time slice (strided to cube resolution).
+
+        With ``generation`` set, the result is stored only if that request
+        is still the newest, so a superseded call cannot overwrite the WCS
+        a newer call prepared.
+        """
         from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
 
-        if self._ds is None or self._cube is None:
+        ds, cube, var = self._ds, self._cube, self._var
+        if ds is None or cube is None:
             return
-        wcs = get_wcs(self._ds, var=self._var, time_idx=self.time_idx)
-        self._full_wcs = wcs
-        self._display_wcs = adjust_wcs_for_array_stride(
-            wcs, self._cube.stride_l, self._cube.stride_m
-        )
+        wcs_time = int(self.time_idx)
+        wcs = get_wcs(ds, var=var, time_idx=wcs_time)
+        display = adjust_wcs_for_array_stride(wcs, cube.stride_l, cube.stride_m)
+        with self._frame_lock:
+            if generation is not None and generation != self._frame_generation:
+                return
+            self._full_wcs = wcs
+            self._display_wcs = display
+            self._display_wcs_time = wcs_time
 
     def _viewport_window(
         self,
@@ -371,17 +382,32 @@ class SkyWidget(anywidget.AnyWidget):
 
         ``window_view`` is the ``(ra, dec, fov)`` the window is chosen for;
         it defaults to the current view traits. Without ``generation`` this
-        starts a new request (superseding any load in flight); callers that
-        decide under the frame lock whether to load pass the ``generation``
-        returned by :meth:`_begin_cube_request` instead. The frame is
+        starts a new request (superseding any load in flight). Callers that
+        claimed their request earlier (:meth:`_claim_request` /
+        :meth:`_begin_cube_request`) pass that ``generation``; if a newer
+        request has been claimed since, nothing is loaded. The frame is
         published only if no newer request, pushed frame or reset happened
-        since; otherwise the load is discarded and the shown window is
-        returned unchanged.
+        by the end of the load; otherwise the load is discarded. In both
+        cases the shown window is returned unchanged.
         """
         with self._frame_lock:
             window = self._viewport_window(*(window_view or ()))
             if generation is None:
                 generation = self._begin_cube_request(window, center)
+            elif generation != self._frame_generation:
+                return self._frame_window
+            else:
+                self._requested_window = window
+                self._requested_center = _center_key(center)
+            # A superseded update_slice can leave time_idx ahead of the WCS
+            # it never finished building; never pair one time's pixels with
+            # another time's WCS.
+            wcs_stale = self._ds is not None and self._display_wcs_time != int(self.time_idx)
+        if wcs_stale:
+            self._update_display_wcs(generation=generation)
+            with self._frame_lock:
+                if generation != self._frame_generation:
+                    return self._frame_window
         try:
             t_load = time.perf_counter()
             data, wcs, reproject_center, template = self._cube_frame(window, center)
@@ -421,23 +447,35 @@ class SkyWidget(anywidget.AnyWidget):
         if self._cube is None:
             return
         with self._frame_lock:
-            self._frame_generation += 1
-        if update_wcs:
-            self._update_display_wcs()
+            generation = self._claim_request()
+            # A superseded update_slice can leave time_idx set before it built
+            # that time's WCS, so check the WCS's own time, not just the trait.
+            needs_wcs = update_wcs or self._display_wcs_time != int(self.time_idx)
+        if needs_wcs:
+            self._update_display_wcs(generation=generation)
         if self._display_wcs is None:
             return
-        self._push_cube_frame()
+        self._push_cube_frame(generation=generation)
+
+    def _claim_request(self) -> int:
+        """Claim a new request token; call with the frame lock held.
+
+        Supersedes every request claimed earlier. A caller claims once, at
+        entry, and carries the token through WCS preparation, loading and
+        publication, so an older call can never re-enter as a newer request.
+        """
+        self._frame_generation += 1
+        return self._frame_generation
 
     def _begin_cube_request(
         self, window: CubeWindow | None, center: SkyCoord | None
     ) -> int:
-        """Start a cube load request; call with the frame lock held.
+        """Claim a cube load request and record what it will show.
 
-        Supersedes every load already in flight and records what this
-        request will show. Returns the generation to pass to
+        Call with the frame lock held. Returns the generation to pass to
         :meth:`_push_cube_frame`.
         """
-        self._frame_generation += 1
+        self._claim_request()
         self._requested_window = window
         self._requested_center = _center_key(center)
         return self._frame_generation
@@ -636,9 +674,8 @@ class SkyWidget(anywidget.AnyWidget):
         self._suppress_gesture_observer = True
         try:
             if time_idx is not None:
-                time_changed = int(time_idx) != int(self.time_idx)
                 self.time_idx = int(time_idx)
-                if time_changed or self._display_wcs is None:
+                if self._display_wcs is None or self._display_wcs_time != int(time_idx):
                     self._update_display_wcs()
             if freq_idx is not None:
                 self.freq_idx = int(freq_idx)
@@ -768,15 +805,23 @@ class SkyWidget(anywidget.AnyWidget):
             return
         if self._external_frame or self._display_wcs is None or self.image_shape == (0, 0):
             return
-        if self.overlay_view_lock:
-            self._push_cube_frame(
-                center=self.view_center_skycoord(), update_view=False, rescale=False
-            )
-        else:
-            with self._frame_lock:
-                if self._viewport_window() == self._requested_window:
-                    return
-            self._push_cube_frame(update_view=False, rescale=False)
+        with self._frame_lock:
+            view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
+            window = self._viewport_window(*view)
+            if self.overlay_view_lock:
+                center = self.view_center_skycoord()
+            elif window == self._requested_window:
+                return
+            else:
+                center = None
+            generation = self._begin_cube_request(window, center)
+        self._push_cube_frame(
+            center=center,
+            update_view=False,
+            rescale=False,
+            window_view=view,
+            generation=generation,
+        )
 
     def refresh_viewport(self) -> CubeWindow | None:
         """Reload the current slice for the current view when viewport loading is on.
@@ -824,12 +869,18 @@ class SkyWidget(anywidget.AnyWidget):
                 return
             if self.image_shape == (0, 0):
                 return
+            # Capture the view and claim the request under one lock, so an
+            # older call cannot claim later with a stale center.
             center = self.view_center_skycoord()
+            view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
+            generation = self._begin_cube_request(self._viewport_window(*view), center)
         self._push_cube_frame(
             center=center,
             update_view=False,
             percentile_low=percentile_low,
             percentile_high=percentile_high,
+            window_view=view,
+            generation=generation,
         )
 
     def clear_image(self) -> None:
@@ -912,6 +963,7 @@ class SkyWidget(anywidget.AnyWidget):
             self._frame_center = None
             self._requested_window = None
             self._requested_center = None
+            self._display_wcs_time = None
             self._external_frame = False
 
         if defer_display:
@@ -996,22 +1048,31 @@ class SkyWidget(anywidget.AnyWidget):
             raise RuntimeError("Call set_dataset() before update_slice()")
         use_view_lock = self.overlay_view_lock if view_lock is None else view_lock
         explicit_center = center is not None
-        if use_view_lock and center is None:
-            center = self.view_center_skycoord()
-        time_changed = int(time_idx) != int(self.time_idx)
         scale_low = 1.0 if percentile_low is None else float(percentile_low)
         scale_high = 99.0 if percentile_high is None else float(percentile_high)
-        with self._frame_lock:
-            # Invalidate any debounced load already running for the old slice.
-            self._frame_generation += 1
         self._suppress_slice_observer = True
         self._suppress_gesture_observer = True
         try:
-            with self.hold_trait_notifications():
-                self.time_idx = int(time_idx)
-                self.freq_idx = int(freq_idx)
-            if time_changed or self._display_wcs is None:
-                self._update_display_wcs()
+            with self._frame_lock:
+                # Claim this request once, together with the slice traits and
+                # the view-lock center, so they agree with the request order.
+                # The token is carried through WCS preparation, loading and
+                # publication; if a newer request is claimed meanwhile, this
+                # call stops and leaves the newer one's state alone.
+                generation = self._claim_request()
+                if use_view_lock and center is None:
+                    center = self.view_center_skycoord()
+                with self.hold_trait_notifications():
+                    self.time_idx = int(time_idx)
+                    self.freq_idx = int(freq_idx)
+                needs_wcs = (
+                    self._display_wcs is None or self._display_wcs_time != int(time_idx)
+                )
+            if needs_wcs:
+                self._update_display_wcs(generation=generation)
+            with self._frame_lock:
+                if generation != self._frame_generation:
+                    return
             if self._display_wcs is None:
                 msg = (
                     f"Could not build display WCS for time_idx={int(time_idx)}, "
@@ -1037,6 +1098,7 @@ class SkyWidget(anywidget.AnyWidget):
                 fov=fov,
                 update_view=fov is not None or not use_view_lock or explicit_center,
                 window_view=window_view,
+                generation=generation,
             )
             if _PROFILE_PUSH:
                 profile = dict(getattr(self, "_profile_last_push", {}))

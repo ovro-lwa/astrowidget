@@ -674,3 +674,156 @@ class TestOverlappingNavigation:
             w._current_data,
             ds["SKY"].values[0, 1, 0, win.l_start:win.l_stop, win.m_start:win.m_stop],
         )
+
+
+def _per_time_wcs_dataset(shift=1.0) -> xr.Dataset:
+    """Like ``_dataset`` but with a per-time WCS header (time t at RA0 + t*shift)."""
+    ds = _dataset()
+    headers = np.array(
+        [_header(ra=RA0 + t * shift).encode("utf-8") for t in range(ds.sizes["time"])]
+    )
+    return ds.assign(wcs_header_str=(["time"], headers))
+
+
+class _GatedWcs:
+    """Pause ``get_wcs`` on the thread named ``old`` until released."""
+
+    def __init__(self, monkeypatch):
+        import threading
+
+        import astrowidget.wcs as wcs_mod
+
+        self._orig = wcs_mod.get_wcs
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        monkeypatch.setattr(wcs_mod, "get_wcs", self)
+
+    def __call__(self, *args, **kwargs):
+        import threading
+
+        if threading.current_thread().name == "old":
+            self.entered.set()
+            assert self.release.wait(10), "gated WCS was never released"
+        return self._orig(*args, **kwargs)
+
+
+class TestRequestClaimedOnce:
+    """A call claims its request at entry; an older call never re-enters as newer."""
+
+    def _thread(self, target):
+        import threading
+
+        errors = []
+
+        def run():
+            try:
+                target()
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        t = threading.Thread(target=run, name="old")
+        t.start()
+        return t, errors
+
+    def test_older_update_slice_paused_in_wcs_does_not_win(self, monkeypatch):
+        from astrowidget.wcs import get_wcs
+
+        ds = _chunked(_per_time_wcs_dataset())
+        w = _widget(ds)
+        _view(w, RA0, DEC0, 8.0)
+        gate = _GatedWcs(monkeypatch)
+        old, errors = self._thread(
+            lambda: w.update_slice(1, 0, center=SkyCoord(RA0 * u.deg, DEC0 * u.deg), fov=4 * u.deg)
+        )
+        assert gate.entered.wait(10)
+        w.update_slice(0, 0, center=SkyCoord((RA0 + 15) * u.deg, DEC0 * u.deg), fov=4 * u.deg)
+        newer = (w.view_ra, w._frame_window, w.image_revision)
+        gate.release.set()
+        old.join(10)
+        assert not old.is_alive() and errors == []
+        assert (w.view_ra, w._frame_window, w.image_revision) == newer
+        assert w.view_ra == pytest.approx(RA0 + 15)
+        assert w.time_idx == 0
+        # The paused call built a time-1 WCS; it must not replace time 0's.
+        assert w._full_wcs.wcs.crval[0] == pytest.approx(get_wcs(ds, time_idx=0).wcs.crval[0])
+
+    def test_newer_same_time_call_rebuilds_wcs(self, monkeypatch):
+        """A newer call for the time an older call is still preparing builds its own WCS."""
+        from astrowidget.wcs import get_wcs
+
+        ds = _chunked(_per_time_wcs_dataset())
+        w = _widget(ds)
+        _view(w, RA0, DEC0, 8.0)
+        gate = _GatedWcs(monkeypatch)
+        old, errors = self._thread(lambda: w.update_slice(1, 0))
+        assert gate.entered.wait(10)
+        w.update_slice(1, 1)  # time_idx is already 1, but the WCS is still time 0's
+        # The newer call must not publish with the WCS the older call has not
+        # built yet.
+        assert w._full_wcs.wcs.crval[0] == pytest.approx(get_wcs(ds, time_idx=1).wcs.crval[0])
+        gate.release.set()
+        old.join(10)
+        assert errors == []
+        assert (w.time_idx, w.freq_idx) == (1, 1)
+        assert w._full_wcs.wcs.crval[0] == pytest.approx(get_wcs(ds, time_idx=1).wcs.crval[0])
+        win = w._frame_window
+        np.testing.assert_array_equal(
+            w._current_data,
+            ds["SKY"].values[1, 1, 0, win.l_start:win.l_stop, win.m_start:win.m_stop],
+        )
+
+    @pytest.mark.parametrize("finish_first", ["old", "new"])
+    def test_reproject_at_view_newest_center_wins(self, finish_first):
+        import threading
+
+        w = _widget(_chunked(_dataset()), lock=True)
+        _view(w, RA0, DEC0, 8.0)
+        gate = _GatedReads(w._cube, "window_image")
+        errors = []
+
+        def run():
+            try:
+                w.reproject_at_view()
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        _move(w, RA0 + 10.0)
+        old = threading.Thread(target=run, name="old")
+        old.start()
+        assert gate.started["old"].wait(10)
+        _move(w, RA0 + 4.0)
+        new = threading.Thread(target=run, name="new")
+        new.start()
+        assert gate.started["new"].wait(10)
+        threads = {"old": old, "new": new}
+        for key in ([finish_first] + [k for k in ("old", "new") if k != finish_first]):
+            gate.release[key].set()
+            threads[key].join(10)
+        assert errors == []
+        assert w.crval == pytest.approx([RA0 + 4.0, DEC0])
+
+    @pytest.mark.parametrize("entry", ["refresh_viewport", "reproject_at_view", "debounce"])
+    def test_overtaking_request_never_pairs_pixels_with_stale_wcs(self, monkeypatch, entry):
+        """A request that overtakes update_slice mid-WCS builds the WCS for the time it shows."""
+        from astrowidget.wcs import get_wcs
+
+        ds = _chunked(_per_time_wcs_dataset())
+        w = _widget(ds, lock=entry == "reproject_at_view")
+        _view(w, RA0, DEC0, 8.0)
+        gate = _GatedWcs(monkeypatch)
+        old, errors = self._thread(lambda: w.update_slice(1, 0))
+        assert gate.entered.wait(10)
+        assert w.time_idx == 1  # trait already moved; its WCS is not built yet
+        _move(w, RA0 + 30.0)
+        revision = w.image_revision
+        if entry == "debounce":
+            w._run_debounced_reproject_at_view()
+        else:
+            getattr(w, entry)()
+        assert w.image_revision > revision  # the overtaking request published
+        gate.release.set()
+        old.join(10)
+        assert not old.is_alive() and errors == []
+        assert w.time_idx == 1
+        assert w._full_wcs.wcs.crval[0] == pytest.approx(get_wcs(ds, time_idx=1).wcs.crval[0])
+        assert w._display_wcs_time == 1
