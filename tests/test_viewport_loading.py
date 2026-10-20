@@ -807,7 +807,7 @@ class TestRequestClaimedOnce:
         """A request that overtakes update_slice mid-WCS builds the WCS for the time it shows."""
         from astrowidget.wcs import get_wcs
 
-        ds = _chunked(_per_time_wcs_dataset())
+        ds = _chunked(_per_time_wcs_dataset(shift=20.0))
         w = _widget(ds, lock=entry == "reproject_at_view")
         _view(w, RA0, DEC0, 8.0)
         gate = _GatedWcs(monkeypatch)
@@ -827,3 +827,20 @@ class TestRequestClaimedOnce:
         assert w.time_idx == 1
         assert w._full_wcs.wcs.crval[0] == pytest.approx(get_wcs(ds, time_idx=1).wcs.crval[0])
         assert w._display_wcs_time == 1
+        # The window was chosen with time 1's WCS, so it covers the view.
+        win = w._frame_window
+        assert win is not None and win == w._viewport_window()
+        assert w._requested_window == win
+        l_pix, m_pix = w._full_wcs.all_world2pix(w.view_ra, w.view_dec, 0)
+        assert win.l_start <= l_pix < win.l_stop and win.m_start <= m_pix < win.m_stop
+        # Same pixels as a widget that reached this state with no race.
+        ref = _widget(ds, lock=entry == "reproject_at_view")
+        _view(ref, RA0, DEC0, 8.0)
+        ref.update_slice(1, 0)
+        _move(ref, RA0 + 30.0)
+        if entry == "debounce":
+            ref._run_debounced_reproject_at_view()
+        else:
+            getattr(ref, entry)()
+        assert ref._frame_window == win
+        np.testing.assert_array_equal(w._current_data, ref._current_data)

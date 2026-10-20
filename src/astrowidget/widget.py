@@ -275,7 +275,8 @@ class SkyWidget(anywidget.AnyWidget):
 
         With ``generation`` set, the result is stored only if that request
         is still the newest, so a superseded call cannot overwrite the WCS
-        a newer call prepared.
+        a newer call prepared. In every case it is stored only if
+        ``time_idx`` has not moved since the build started.
         """
         from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
 
@@ -288,9 +289,19 @@ class SkyWidget(anywidget.AnyWidget):
         with self._frame_lock:
             if generation is not None and generation != self._frame_generation:
                 return
+            if int(self.time_idx) != wcs_time:
+                return
             self._full_wcs = wcs
             self._display_wcs = display
             self._display_wcs_time = wcs_time
+
+    def _wcs_stale(self) -> bool:
+        """True when the display WCS was built for another time than ``time_idx``.
+
+        A superseded :meth:`update_slice` can leave ``time_idx`` ahead of the
+        WCS it never finished building. Call with the frame lock held.
+        """
+        return self._ds is not None and self._display_wcs_time != int(self.time_idx)
 
     def _viewport_window(
         self,
@@ -391,23 +402,21 @@ class SkyWidget(anywidget.AnyWidget):
         cases the shown window is returned unchanged.
         """
         with self._frame_lock:
-            window = self._viewport_window(*(window_view or ()))
             if generation is None:
-                generation = self._begin_cube_request(window, center)
+                generation = self._claim_request()
             elif generation != self._frame_generation:
                 return self._frame_window
-            else:
-                self._requested_window = window
-                self._requested_center = _center_key(center)
-            # A superseded update_slice can leave time_idx ahead of the WCS
-            # it never finished building; never pair one time's pixels with
-            # another time's WCS.
-            wcs_stale = self._ds is not None and self._display_wcs_time != int(self.time_idx)
+            wcs_stale = self._wcs_stale()
         if wcs_stale:
+            # Never pair one time's pixels with another time's WCS, and pick
+            # the window with the WCS the frame will be shown on.
             self._update_display_wcs(generation=generation)
-            with self._frame_lock:
-                if generation != self._frame_generation:
-                    return self._frame_window
+        with self._frame_lock:
+            if generation != self._frame_generation:
+                return self._frame_window
+            window = self._viewport_window(*(window_view or ()))
+            self._requested_window = window
+            self._requested_center = _center_key(center)
         try:
             t_load = time.perf_counter()
             data, wcs, reproject_center, template = self._cube_frame(window, center)
@@ -747,11 +756,16 @@ class SkyWidget(anywidget.AnyWidget):
                 return
             view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
             window = self._viewport_window(*view)
+            # With a stale WCS the window above is not the one that will be
+            # loaded, so it cannot prove the view is already covered.
+            wcs_stale = self._wcs_stale()
             if self.overlay_view_lock:
-                if not (gesture or self._lock_frame_stale()):
+                if not (gesture or wcs_stale or self._lock_frame_stale()):
                     return
                 center = self.view_center_skycoord()
-            elif not self._viewport_refresh_applies() or window == self._requested_window:
+            elif not self._viewport_refresh_applies() or (
+                window == self._requested_window and not wcs_stale
+            ):
                 return
             else:
                 center = None
@@ -839,7 +853,7 @@ class SkyWidget(anywidget.AnyWidget):
                 return self._frame_window
             view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
             window = self._viewport_window(*view)
-            if window == self._requested_window:
+            if window == self._requested_window and not self._wcs_stale():
                 return self._frame_window
             generation = self._begin_cube_request(window, None)
         return self._push_cube_frame(
