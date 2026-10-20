@@ -21,6 +21,7 @@ __all__ = [
     "angular_separation_deg",
     "apply_reproject_maps",
     "adjust_wcs_for_array_stride",
+    "adjust_wcs_for_window",
     "build_reproject_maps",
     "build_reproject_maps_from_view_geometry",
     "build_view_reproject_geometry",
@@ -30,6 +31,7 @@ __all__ = [
     "reproject_wcs_fingerprint",
     "should_skip_shader_reproject",
     "view_reproject_geometry_key",
+    "view_pixel_bbox",
     "wcs_projection_matches_naive_shader",
 ]
 
@@ -128,6 +130,29 @@ def adjust_wcs_for_array_stride(
         (wcs.wcs.crpix[1] + sm - 1.0) / sm,
     ]
     return out
+
+
+def adjust_wcs_for_window(
+    wcs: AstropyWCS,
+    l_start: int,
+    m_start: int,
+    stride_l: int = 1,
+    stride_m: int = 1,
+) -> AstropyWCS:
+    """Return a WCS describing ``data[l_start::stride_l, m_start::stride_m]``.
+
+    Generalizes :func:`adjust_wcs_for_array_stride` to a sub-image whose first
+    sample is full-resolution 0-based pixel ``(l_start, m_start)``. Coarse
+    pixel ``k`` samples FITS pixel ``P = start + k * stride + 1``, so
+    ``CRPIX' = (CRPIX - start + stride - 1) / stride`` and
+    ``CDELT' = CDELT * stride``.
+    """
+    shifted = wcs.deepcopy()
+    shifted.wcs.crpix = [
+        wcs.wcs.crpix[0] - float(l_start),
+        wcs.wcs.crpix[1] - float(m_start),
+    ]
+    return adjust_wcs_for_array_stride(shifted, stride_l, stride_m)
 
 
 def get_wcs(ds: xr.Dataset, var: str = "SKY", time_idx: int = 0):
@@ -367,6 +392,58 @@ def _make_naive_sin_wcs(
     out.wcs.crpix = [float(template.wcs.crpix[0]), float(template.wcs.crpix[1])]
     out.wcs.cunit = ["deg", "deg"]
     return out
+
+
+def view_pixel_bbox(
+    wcs: AstropyWCS,
+    view_ra: float,
+    view_dec: float,
+    view_fov: float,
+    *,
+    samples: int = 9,
+) -> tuple[float, float, float, float] | None:
+    """Full-res 0-based pixel bounding box of *wcs* that a view can show.
+
+    ``view_fov`` is the larger canvas dimension in degrees (the frontend
+    convention). The visible rectangle, at any aspect ratio and any view
+    rotation, lies inside the disk through the corners of a ``view_fov``
+    square, so that disk is sampled on the view's SIN tangent plane and mapped
+    through *wcs*; samples beyond either hemisphere are dropped.
+
+    Returns ``(l_min, l_max, m_min, m_max)`` (unclipped), or ``None`` when the
+    view covers a hemisphere or none of it lands in front of the image.
+    """
+    fov = float(view_fov)
+    if not np.isfinite(fov) or fov <= 0.0 or fov >= 180.0:
+        return None
+    radius = min(1.0, float(np.sqrt(2.0) * np.sin(np.deg2rad(fov) * 0.5)))
+    grid = np.linspace(-radius, radius, max(2, int(samples)))
+    l_plane, m_plane = np.meshgrid(grid, grid, indexing="ij")
+    in_disk = np.hypot(l_plane, m_plane) <= radius
+    theta = np.linspace(0.0, 2.0 * np.pi, 4 * max(2, int(samples)), endpoint=False)
+    l_pts = np.concatenate([l_plane[in_disk], radius * np.cos(theta)])
+    m_pts = np.concatenate([m_plane[in_disk], radius * np.sin(theta)])
+    view = _make_naive_sin_wcs(wcs, crval_ra=view_ra, crval_dec=view_dec)
+    ra, dec = _naive_sin_lm_to_world(view, l_pts, m_pts)
+
+    cel = wcs.celestial
+    ra0 = np.deg2rad(float(cel.wcs.crval[0]))
+    dec0 = np.deg2rad(float(cel.wcs.crval[1]))
+    ra_r, dec_r = np.deg2rad(ra), np.deg2rad(dec)
+    cos_sep = np.sin(dec_r) * np.sin(dec0) + np.cos(dec_r) * np.cos(dec0) * np.cos(ra_r - ra0)
+    front = cos_sep > 0.0
+    if not np.any(front):
+        return None
+    px, py = cel.all_world2pix(ra[front], dec[front], 0)
+    ok = np.isfinite(px) & np.isfinite(py)
+    if not np.any(ok):
+        return None
+    return (
+        float(px[ok].min()),
+        float(px[ok].max()),
+        float(py[ok].min()),
+        float(py[ok].max()),
+    )
 
 
 def reproject_output_scale_fingerprint(wcs: AstropyWCS) -> tuple[float, ...]:

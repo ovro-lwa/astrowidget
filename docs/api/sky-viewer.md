@@ -44,6 +44,7 @@ All parameters are `param.Parameterized` and can be set programmatically or via 
 | `show_grid` | `Boolean` | `True` | Show RA/Dec grid |
 | `background_survey` | `Selector` | `""` | HiPS background |
 | `background_opacity` | `Number` | `1.0` | Background opacity |
+| `viewport_loading` | `Boolean` | `False` | Load only the zarr chunks in view, up to full resolution, when zoomed in ("Full-res when zoomed" checkbox) |
 
 ## Methods
 

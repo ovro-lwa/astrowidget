@@ -58,6 +58,7 @@ nav:
   - Guides:
     - OVRO-LWA Integration: guides/ovro-lwa.md
     - HiPS Backgrounds: guides/hips-backgrounds.md
+    - Performance: guides/performance.md
     - Development Guide: guides/development.md
   - Contributing: contributing.md
   - API Reference:

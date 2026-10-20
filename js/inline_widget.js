@@ -147,7 +147,8 @@ void main() {
     // px/py are 0-based WCS axis 1/2; texture is (width=n_m, height=n_l) from numpy (l, m).
     float px = l/u_cdelt.x + u_crpix.x - 1.0;
     float py = m/u_cdelt.y + u_crpix.y - 1.0;
-    vec2 uv = vec2(py/u_imageSize.x, px/u_imageSize.y);
+    // Texel k covers 0-based pixels [k - 0.5, k + 0.5); its center is uv (k + 0.5) / size.
+    vec2 uv = vec2((py + 0.5)/u_imageSize.x, (px + 0.5)/u_imageSize.y);
 
     // Outside image bounds
     if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) {

@@ -53,6 +53,10 @@ Navigate the view to a celestial target.
 
 Set vmin/vmax from data percentiles.
 
+### refresh_viewport()
+
+Reload the current slice for the current view when `viewport_loading` is on. Called automatically (debounced) after pan/zoom; call it directly after changing the view from Python without a frontend. Returns the loaded `CubeWindow`, or `None` for the full strided image.
+
 ### update_slice(time_idx, freq_idx)
 
 Update the displayed image to a different time/frequency slice. Requires `set_dataset()` first.
@@ -89,6 +93,7 @@ All traitlets are synced bidirectionally with the JavaScript frontend.
 | `view_dec` | `Float` | `0.0` | View center Dec in degrees |
 | `view_fov` | `Float` | `180.0` | Field of view in degrees |
 | `invert_horizontal_pan` | `Bool` | `True` | If `True` (default), horizontal drag uses map-style east/west; set `False` for the legacy grab-the-sky direction |
+| `viewport_loading` | `Bool` | `False` | Python-only. When zoomed in, load only the zarr chunks covering the view, at up to full resolution, instead of the whole strided image. See [Performance](../guides/performance.md) |
 
 ### Display Options
 

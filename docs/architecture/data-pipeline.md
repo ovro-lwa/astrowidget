@@ -66,16 +66,21 @@ LRU-cached slice loader that provides fast access to 2D image slices for interac
 
 ### How it works
 
-1. **Strided downsampling**: Caps display resolution at `max_size` (default 512) pixels per axis
-2. **LRU cache**: Stores the 32 most recently accessed slices in memory
-3. **On-demand loading**: Each slice is loaded from zarr only on first access
+1. **Lazy selection**: time, frequency, polarization and the spatial stride are
+   applied to the lazy (dask) array; data is read once, at the end
+2. **Strided downsampling**: Caps display resolution at `max_size` (default 512) pixels per axis
+3. **LRU cache**: Each cube keeps its 32 most recently accessed slices in memory
+4. **Point reads for plots**: spectra, light curves and dynamic spectra read one
+   spatial pixel across the cube in a single compute, without loading images
+5. **Viewport windows** (opt-in): when zoomed in, only the chunks in view are
+   read, at up to full resolution — see [Performance](../guides/performance.md)
 
 ```python
 from astrowidget import PreloadedCube
 
 cube = PreloadedCube(ds, var="SKY", pol=0, max_size=512)
 
-# First access: reads from zarr (~64MB S3 chunk), strides down
+# First access: reads the zarr chunks the strided slice touches
 img = cube.image(time_idx=0, freq_idx=0)  # shape: (512, 512)
 
 # Second access: instant (cache hit)
@@ -90,12 +95,8 @@ lc = cube.light_curve(l_idx=256, m_idx=256, freq_idx=0)
 
 ### Performance
 
-| Operation | Latency | Mechanism |
-|---|---|---|
-| First slice (S3) | ~3s | One 64MB chunk read + stride |
-| First slice (local) | <100ms | Local disk read + stride |
-| Cached slice | <1ms | LRU cache hit |
-| Spectrum (all freqs) | ~1ms per freq | Cache hits for each slice |
+Measured numbers, and how to reproduce them with `pixi run bench`, are in
+[Performance](../guides/performance.md).
 
 ## Binary Transfer
 
