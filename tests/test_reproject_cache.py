@@ -53,6 +53,39 @@ def test_oblique_header_skips_at_crval_when_naive_matches() -> None:
     assert should_skip_shader_reproject(w, 89.0, 37.0) is True
 
 
+def test_push_shader_frame_skips_second_warp_and_keeps_view() -> None:
+    """A prepared frame must not reproject or move the view.
+
+    The PC rotation makes ``should_skip_shader_reproject`` false at CRVAL, so
+    this fails if ``push_shader_frame`` falls through to the view-centered warp.
+    """
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---SIN", "DEC--SIN"]
+    w.wcs.crval = [10.0, 20.0]
+    w.wcs.cdelt = [-0.05, 0.05]
+    w.wcs.crpix = [16.5, 16.5]
+    w.wcs.cunit = ["deg", "deg"]
+    w.wcs.pc = [[0.0, -1.0], [1.0, 0.0]]
+    data = np.ones((32, 32), dtype=np.float32)
+    widget = SkyWidget()
+    widget.view_ra = 12.5
+    widget.view_dec = -4.0
+    widget.view_fov = 8.0
+    with patch.object(
+        widget,
+        "_reproject_with_cached_maps",
+        side_effect=AssertionError("second warp"),
+    ):
+        widget.push_shader_frame(data, w, time_idx=2, freq_idx=1)
+    assert widget.view_ra == 12.5
+    assert widget.view_dec == -4.0
+    assert widget.view_fov == 8.0
+    assert widget.time_idx == 2
+    assert widget.freq_idx == 1
+    assert widget.image_shape == (32, 32)
+    assert np.allclose(widget._current_data, data)
+
+
 def test_skip_path_preserves_native_data_at_phase_center() -> None:
     w = _simple_wcs()
     n = 64

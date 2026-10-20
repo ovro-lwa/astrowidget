@@ -65,10 +65,10 @@ class PreloadedCube:
         self.n_freqs = len(self.freq_vals)
 
     @lru_cache(maxsize=_CACHE_SIZE)  # noqa: B019
-    def _load_slice(self, time_idx: int, freq_idx: int) -> np.ndarray:
+    def _load_slice(self, time_idx: int, freq_idx: int, pol: int) -> np.ndarray:
         """Load and downsample a single (l, m) slice. Cached via LRU."""
         da = self._ds[self.var].isel(
-            time=time_idx, frequency=freq_idx, polarization=self.pol
+            time=time_idx, frequency=freq_idx, polarization=int(pol)
         )
         data = da.values[:: self.stride_l, :: self.stride_m]
         return data.astype(np.float32, copy=False)
@@ -81,30 +81,33 @@ class PreloadedCube:
         ``(l, m)`` to ``(m, l)`` mis-registers the sky overlay when ``CRVAL``
         changes per time step.
         """
-        return self._load_slice(time_idx, freq_idx)
+        return self._load_slice(time_idx, freq_idx, int(self.pol))
 
     def spectrum(self, l_idx: int, m_idx: int, time_idx: int) -> np.ndarray:
         """Get a 1D frequency spectrum at a display pixel and time."""
         out = np.empty(self.n_freqs, dtype=np.float32)
+        pol = int(self.pol)
         for fi in range(self.n_freqs):
-            slc = self._load_slice(time_idx, fi)
+            slc = self._load_slice(time_idx, fi, pol)
             out[fi] = slc[l_idx, m_idx]
         return out
 
     def light_curve(self, l_idx: int, m_idx: int, freq_idx: int) -> np.ndarray:
         """Get a 1D time series at a display pixel and frequency."""
         out = np.empty(self.n_times, dtype=np.float32)
+        pol = int(self.pol)
         for ti in range(self.n_times):
-            slc = self._load_slice(ti, freq_idx)
+            slc = self._load_slice(ti, freq_idx, pol)
             out[ti] = slc[l_idx, m_idx]
         return out
 
     def dynamic_spectrum(self, l_idx: int, m_idx: int) -> np.ndarray:
         """Get a 2D (time, freq) dynamic spectrum at a display pixel."""
         out = np.empty((self.n_times, self.n_freqs), dtype=np.float32)
+        pol = int(self.pol)
         for ti in range(self.n_times):
             for fi in range(self.n_freqs):
-                slc = self._load_slice(ti, fi)
+                slc = self._load_slice(ti, fi, pol)
                 out[ti, fi] = slc[l_idx, m_idx]
         return out
 
