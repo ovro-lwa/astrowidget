@@ -725,8 +725,11 @@ export async function render({ model, el }) {
     model.on("change:crval", () => { syncWCS(); });
     model.on("change:cdelt", () => { syncWCS(); });
     model.on("change:crpix", () => { syncWCS(); });
-    model.on("change:vmin", () => { syncDisplay(); uploadImage(); });
-    model.on("change:vmax", () => { syncDisplay(); uploadImage(); });
+    // Manual vmin/vmax changes arrive without an image_revision bump, so they
+    // must redraw themselves. scheduleDraw coalesces with the redraw of a
+    // Python batch that also bumps image_revision.
+    model.on("change:vmin", () => { syncDisplay(); uploadImage(); scheduleDraw(); });
+    model.on("change:vmax", () => { syncDisplay(); uploadImage(); scheduleDraw(); });
     model.on("change:image_revision", () => {
       syncDisplay();
       syncImage();

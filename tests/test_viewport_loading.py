@@ -534,3 +534,143 @@ class TestInFlightDebounce:
         t.join(10)
         assert w.time_idx == 1
         np.testing.assert_array_equal(w._current_data, newer)
+
+
+class _GatedReads:
+    """Hold each worker thread's cube read until that thread is released."""
+
+    def __init__(self, cube, name):
+        import threading
+
+        self._orig = getattr(cube, name)
+        self._main = threading.main_thread()
+        self.started: dict[str, threading.Event] = {}
+        self.release: dict[str, threading.Event] = {}
+        for key in ("old", "new"):
+            self.started[key] = threading.Event()
+            self.release[key] = threading.Event()
+        setattr(cube, name, self)
+
+    def __call__(self, *args, **kwargs):
+        import threading
+
+        result = self._orig(*args, **kwargs)
+        key = threading.current_thread().name
+        if key in self.started:
+            self.started[key].set()
+            assert self.release[key].wait(10), "gated read was never released"
+        return result
+
+
+def _move(w: SkyWidget, ra: float) -> None:
+    w._suppress_gesture_observer = True
+    try:
+        w.view_ra = ra
+    finally:
+        w._suppress_gesture_observer = False
+
+
+class TestOverlappingNavigation:
+    """The newest navigation request wins, whichever load finishes first."""
+
+    def _run(self, w, name, target):
+        import threading
+
+        errors = []
+
+        def run():
+            try:
+                target()
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        t = threading.Thread(target=run, name=name)
+        t.start()
+        return t, errors
+
+    @pytest.mark.parametrize("finish_first", ["old", "new"])
+    @pytest.mark.parametrize("entry", ["debounce", "refresh_viewport"])
+    def test_newest_view_wins(self, finish_first, entry):
+        w = _widget(_chunked(_dataset()))
+        _view(w, RA0, DEC0, 8.0)
+        gate = _GatedReads(w._cube, "window_image")
+        target = (w._run_debounced_reproject_at_view if entry == "debounce"
+                  else w.refresh_viewport)
+        _move(w, RA0 + 30.0)
+        old, e1 = self._run(w, "old", target)
+        assert gate.started["old"].wait(10)
+        _move(w, RA0 + 15.0)
+        expected = w._viewport_window()
+        new, e2 = self._run(w, "new", target)
+        assert gate.started["new"].wait(10)
+        order = ["old", "new"] if finish_first == "old" else ["new", "old"]
+        threads = {"old": old, "new": new}
+        for key in order:
+            gate.release[key].set()
+            threads[key].join(10)
+        assert e1 == [] and e2 == []
+        assert w._frame_window == expected
+        np.testing.assert_array_equal(
+            w._current_data,
+            _chunked(_dataset())["SKY"].values[
+                0, 0, 0, expected.l_start:expected.l_stop, expected.m_start:expected.m_stop
+            ],
+        )
+
+    def test_return_to_shown_window_discards_older_load(self):
+        w = _widget(_chunked(_dataset()))
+        _view(w, RA0, DEC0, 8.0)
+        shown = w._frame_window
+        gate = _GatedReads(w._cube, "window_image")
+        _move(w, RA0 + 30.0)
+        old, errors = self._run(w, "old", w._run_debounced_reproject_at_view)
+        assert gate.started["old"].wait(10)
+        _move(w, RA0)  # back inside the shown window: nothing to load
+        w._run_debounced_reproject_at_view()
+        gate.release["old"].set()
+        old.join(10)
+        assert errors == []
+        assert w._frame_window == shown
+
+    def test_lock_newest_center_wins(self):
+        w = _widget(_chunked(_dataset()), lock=True)
+        _view(w, RA0, DEC0, 8.0)
+        gate = _GatedReads(w._cube, "window_image")
+        _move(w, RA0 + 10.0)
+        w.view_gesture_revision += 1
+        w._cancel_gesture_reproject_timer()
+        old, e1 = self._run(w, "old", w._run_debounced_reproject_at_view)
+        assert gate.started["old"].wait(10)
+        _move(w, RA0 + 4.0)
+        w.view_gesture_revision += 1
+        w._cancel_gesture_reproject_timer()
+        new, e2 = self._run(w, "new", w._run_debounced_reproject_at_view)
+        assert gate.started["new"].wait(10)
+        gate.release["old"].set()
+        old.join(10)
+        gate.release["new"].set()
+        new.join(10)
+        assert e1 == [] and e2 == []
+        assert w.crval == pytest.approx([RA0 + 4.0, DEC0])
+
+    @pytest.mark.parametrize("finish_first", ["old", "new"])
+    def test_overlapping_slice_changes_newest_wins(self, finish_first):
+        ds = _chunked(_dataset())
+        w = _widget(ds)
+        _view(w, RA0, DEC0, 8.0)
+        win = w._frame_window
+        gate = _GatedReads(w._cube, "window_image")
+        old, e1 = self._run(w, "old", lambda: w.update_slice(1, 0))
+        assert gate.started["old"].wait(10)
+        new, e2 = self._run(w, "new", lambda: w.update_slice(0, 1))
+        assert gate.started["new"].wait(10)
+        threads = {"old": old, "new": new}
+        for key in (["old", "new"] if finish_first == "old" else ["new", "old"]):
+            gate.release[key].set()
+            threads[key].join(10)
+        assert e1 == [] and e2 == []
+        assert (w.time_idx, w.freq_idx) == (0, 1)
+        np.testing.assert_array_equal(
+            w._current_data,
+            ds["SKY"].values[0, 1, 0, win.l_start:win.l_stop, win.m_start:win.m_stop],
+        )

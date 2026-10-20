@@ -58,9 +58,14 @@ frames under view lock, observe `view_gesture_revision` and re-push. An
 explicit `reproject_at_view()` call still rescales and always draws the cube
 slice.
 
-A debounced reload runs on a timer thread. If `update_slice`, a time or
-frequency change, `set_dataset`, `clear_image` or a pushed frame happens while
-it is loading, its result is discarded rather than drawn over the newer frame.
+A debounced reload runs on a timer thread. The newest request wins: a load is
+discarded, rather than drawn over newer state, when a later pan or zoom is
+handled, or when `update_slice`, a time or frequency change, `set_dataset`,
+`clear_image` or a pushed frame happens while it is loading. The same applies
+to `refresh_viewport()` and `reproject_at_view()` called from another thread,
+and to overlapping `update_slice` calls. `set_dataset`, `set_image` and
+`push_shader_frame` are not ordered against each other across threads; make
+those calls from one thread.
 
 ## dask.distributed
 
