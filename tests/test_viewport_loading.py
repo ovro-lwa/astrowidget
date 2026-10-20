@@ -342,3 +342,195 @@ class TestViewportLoading:
         _view(w, RA0, DEC0, 8.0)
         w.set_dataset(_dataset(), max_size=64)
         assert w._frame_window is None and w._external_frame is False
+
+
+def _gesture(w: SkyWidget) -> None:
+    """Simulate a frontend pan/zoom gesture under view lock, then the debounce."""
+    w.view_gesture_revision += 1
+    w._cancel_gesture_reproject_timer()
+    w._run_debounced_reproject_at_view()
+
+
+class TestViewLockNavigation:
+    @pytest.mark.parametrize("viewport", [False, True])
+    def test_gesture_keeps_manual_limits(self, viewport):
+        w = _widget(_chunked(_dataset()), viewport=viewport, lock=True)
+        _view(w, RA0 + 2.0, DEC0, 8.0)
+        w.vmin, w.vmax = -123.0, 456.0
+        revision = w.image_revision
+        _gesture(w)
+        assert w.image_revision > revision  # it did re-warp
+        assert (w.vmin, w.vmax) == (-123.0, 456.0)
+
+    def test_explicit_reproject_at_view_still_rescales(self):
+        w = _widget(_chunked(_dataset()), lock=True)
+        w.vmin, w.vmax = -123.0, 456.0
+        w.reproject_at_view()
+        assert (w.vmin, w.vmax) != (-123.0, 456.0)
+
+    @pytest.mark.parametrize("viewport", [False, True])
+    @pytest.mark.parametrize("push", ["set_image", "push_shader_frame"])
+    def test_gesture_does_not_replace_pushed_frame(self, viewport, push):
+        w = _widget(_chunked(_dataset()), viewport=viewport, lock=True)
+        data = np.full((16, 16), 77.0, np.float32)
+        getattr(w, push)(data, _wcs())
+        _gesture(w)
+        _view(w, RA0 + 30.0, DEC0, 8.0)
+        assert tuple(w.image_shape) == (16, 16)
+        np.testing.assert_array_equal(w._current_data, data)
+        assert w._external_frame is True
+
+
+class _PausedRead:
+    """Block the first cube read made on a non-main thread until released."""
+
+    def __init__(self, cube, name):
+        import threading
+
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self._main = threading.main_thread()
+        self._orig = getattr(cube, name)
+        self._armed = True
+        setattr(cube, name, self)
+
+    def __call__(self, *args, **kwargs):
+        import threading
+
+        result = self._orig(*args, **kwargs)
+        if self._armed and threading.current_thread() is not self._main:
+            self._armed = False
+            self.started.set()
+            assert self.release.wait(10), "paused read was never released"
+        return result
+
+
+def _start_debounce(w: SkyWidget, *, lock: bool):
+    import threading
+
+    if lock:
+        w.view_gesture_revision += 1
+    else:
+        w._suppress_gesture_observer = True
+        try:
+            w.view_ra = RA0 + 30.0  # past the loaded margin → needs a reload
+        finally:
+            w._suppress_gesture_observer = False
+    w._cancel_gesture_reproject_timer()
+    errors = []
+
+    def run():
+        try:
+            w._run_debounced_reproject_at_view()
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(exc)
+
+    t = threading.Thread(target=run)
+    t.start()
+    return t, errors
+
+
+class TestInFlightDebounce:
+    """A debounced load already running must not publish over newer state."""
+
+    def _setup(self, *, lock: bool, viewport: bool = True):
+        ds = _chunked(_dataset())
+        w = _widget(ds, viewport=viewport, lock=lock)
+        _view(w, RA0, DEC0, 8.0 if viewport else 150.0)
+        name = "window_image" if viewport else "image"
+        return ds, w, _PausedRead(w._cube, name)
+
+    @pytest.mark.parametrize("lock,viewport", [(False, True), (True, True), (True, False)])
+    def test_update_slice_wins(self, lock, viewport):
+        ds, w, paused = self._setup(lock=lock, viewport=viewport)
+        t, errors = _start_debounce(w, lock=lock)
+        assert paused.started.wait(10)
+        w.update_slice(1, 0)
+        newer = w._current_data.copy()
+        revision = w.image_revision
+        paused.release.set()
+        t.join(10)
+        assert errors == []
+        assert w.time_idx == 1
+        assert w.image_revision == revision
+        np.testing.assert_array_equal(w._current_data, newer)
+
+    def test_time_trait_change_wins(self):
+        _, w, paused = self._setup(lock=False)
+        t, errors = _start_debounce(w, lock=False)
+        assert paused.started.wait(10)
+        w.time_idx = 1
+        newer = w._current_data.copy()
+        paused.release.set()
+        t.join(10)
+        assert errors == []
+        np.testing.assert_array_equal(w._current_data, newer)
+
+    def test_clear_image_wins(self):
+        _, w, paused = self._setup(lock=False)
+        t, errors = _start_debounce(w, lock=False)
+        assert paused.started.wait(10)
+        w.clear_image()
+        paused.release.set()
+        t.join(10)
+        assert errors == []
+        assert tuple(w.image_shape) == (0, 0)
+
+    @pytest.mark.parametrize("push", ["set_image", "push_shader_frame"])
+    def test_pushed_frame_wins(self, push):
+        _, w, paused = self._setup(lock=True)
+        t, errors = _start_debounce(w, lock=True)
+        assert paused.started.wait(10)
+        data = np.full((16, 16), 5.0, np.float32)
+        getattr(w, push)(data, _wcs())
+        paused.release.set()
+        t.join(10)
+        assert errors == []
+        np.testing.assert_array_equal(w._current_data, data)
+        assert w._external_frame is True
+
+    def test_set_dataset_wins(self):
+        _, w, paused = self._setup(lock=False)
+        t, errors = _start_debounce(w, lock=False)
+        assert paused.started.wait(10)
+        other = _dataset(n_t=1, n_f=1)
+        other["SKY"].values[:] = 42.0
+        w.set_dataset(other, max_size=64)
+        newer = w._current_data.copy()
+        paused.release.set()
+        t.join(10)
+        assert errors == []
+        np.testing.assert_array_equal(w._current_data, newer)
+        assert w._frame_window is None
+
+    def test_unchanged_state_still_publishes(self):
+        _, w, paused = self._setup(lock=False)
+        before = w._frame_window
+        t, errors = _start_debounce(w, lock=False)
+        assert paused.started.wait(10)
+        paused.release.set()
+        t.join(10)
+        assert errors == []
+        assert w._frame_window != before
+
+    @pytest.mark.parametrize("method,lock", [("refresh_viewport", False),
+                                             ("reproject_at_view", True)])
+    def test_public_refresh_from_thread_loses_to_update_slice(self, method, lock):
+        import threading
+
+        _, w, paused = self._setup(lock=lock)
+        if not lock:
+            w._suppress_gesture_observer = True
+            try:
+                w.view_ra = RA0 + 30.0
+            finally:
+                w._suppress_gesture_observer = False
+        t = threading.Thread(target=getattr(w, method))
+        t.start()
+        assert paused.started.wait(10)
+        w.update_slice(1, 0)
+        newer = w._current_data.copy()
+        paused.release.set()
+        t.join(10)
+        assert w.time_idx == 1
+        np.testing.assert_array_equal(w._current_data, newer)

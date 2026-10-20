@@ -51,6 +51,17 @@ Off by default: the full-image path is unchanged unless you turn it on.
 Frames you push yourself (`set_image`, `push_shader_frame`) are never replaced
 by a window.
 
+The same two rules hold for navigation with `overlay_view_lock`, whether or
+not viewport loading is on: the debounced re-warp after a pan or zoom keeps
+`vmin`/`vmax`, and it skips frames you pushed yourself. If you push your own
+frames under view lock, observe `view_gesture_revision` and re-push. An
+explicit `reproject_at_view()` call still rescales and always draws the cube
+slice.
+
+A debounced reload runs on a timer thread. If `update_slice`, a time or
+frequency change, `set_dataset`, `clear_image` or a pushed frame happens while
+it is loading, its result is discarded rather than drawn over the newer frame.
+
 ## dask.distributed
 
 No configuration is needed. Every read is a single `compute()` on the
