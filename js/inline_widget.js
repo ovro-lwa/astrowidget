@@ -291,10 +291,26 @@ function prepareAladinBackgroundDiv(aladinDiv, container) {
 export async function render({ model, el }) {
   function log(s) { console.log("[astrowidget]", s); }
 
+  // Local FITS HiPS: pass cuts at layer creation, like the index.html served
+  // beside the tiles. A later setCuts alone can miss the layer before it is ready.
+  function backgroundLayer(hipsUrl) {
+    if (!AladinLib?.imageHiPS || typeof hipsUrl !== "string" || !/\.hips\/?$/.test(hipsUrl)) {
+      return hipsUrl;
+    }
+    const lo = model.get("background_cut_min");
+    const hi = model.get("background_cut_max");
+    const opts = { name: "Local HiPS", imgFormat: "fits", stretch: "linear" };
+    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+      opts.minCut = lo;
+      opts.maxCut = hi;
+    }
+    return AladinLib.imageHiPS(hipsUrl, opts);
+  }
+
   function applyBackgroundCuts() {
     const lo = model.get("background_cut_min");
     const hi = model.get("background_cut_max");
-    if (!aladin || !Number.isFinite(lo) || !Number.isFinite(hi)) return;
+    if (!aladin || !Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) return;
     let attempts = 0;
     function tryApply() {
       attempts += 1;
@@ -845,7 +861,7 @@ export async function render({ model, el }) {
       aladin = AladinLib.aladin(aladinDiv, {
         fov: fovDeg || 180,
         target: raDeg + " " + decDeg,
-        survey: hipsUrl,
+        survey: backgroundLayer(hipsUrl),
         ...ALADIN_BG_OPTIONS,
       });
       log("Aladin viewer created: " + initBg);
@@ -859,7 +875,7 @@ export async function render({ model, el }) {
       if (survey && aladin) {
         // Switch survey on existing instance
         const hipsUrl = SURVEY_PRESETS[survey] || survey;
-        aladin.setBaseImageLayer(hipsUrl);
+        aladin.setBaseImageLayer(backgroundLayer(hipsUrl));
         container.style.background = "transparent";
         applyBackgroundCuts();
       } else if (survey && !aladin && !AladinLib) {
@@ -875,7 +891,7 @@ export async function render({ model, el }) {
           aladin = AladinLib.aladin(aladinDiv, {
             fov: (viewFov / DEG2RAD) || 180,
             target: (((viewRA / DEG2RAD) % 360 + 360) % 360) + " " + (viewDec / DEG2RAD),
-            survey: hipsUrl,
+            survey: backgroundLayer(hipsUrl),
             ...ALADIN_BG_OPTIONS,
           });
           log("Aladin loaded on demand: " + survey);
