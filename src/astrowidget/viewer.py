@@ -141,6 +141,10 @@ class SkyViewer(param.Parameterized):
         doc="HiPS background survey (empty = none)",
     )
     background_opacity = param.Number(default=1.0, bounds=(0.0, 1.0), doc="Background opacity")
+    viewport_loading = param.Boolean(
+        default=False,
+        doc="Load only the zarr chunks in view, at up to full resolution, when zoomed in",
+    )
 
     def __init__(self, ds: xr.Dataset, var: str = "SKY", pol: int = 0, max_size: int = 512, **kwargs):
         super().__init__(**kwargs)
@@ -157,6 +161,7 @@ class SkyViewer(param.Parameterized):
         self._widget = SkyWidget()
         self._widget.invert_horizontal_pan = self.invert_horizontal_pan
         self._widget.set_dataset(ds, var=var, pol=pol, max_size=max_size)
+        self._widget.viewport_loading = self.viewport_loading
         # set_dataset() navigates to phase center with fitted FOV.
 
     @classmethod
@@ -219,6 +224,10 @@ class SkyViewer(param.Parameterized):
     @param.depends("background_opacity", watch=True)
     def _on_bg_opacity_change(self):
         self._widget.background_opacity = self.background_opacity
+
+    @param.depends("viewport_loading", watch=True)
+    def _on_viewport_loading_change(self):
+        self._widget.viewport_loading = self.viewport_loading
 
     def _display_indices_at_click(self) -> tuple[int, int]:
         """Downsampled display pixel for the last sky click (RA/Dec)."""
@@ -306,6 +315,9 @@ class SkyViewer(param.Parameterized):
             pn.widgets.Checkbox.from_param(self.param.show_grid, name="Grid"),
             pn.widgets.Checkbox.from_param(
                 self.param.invert_horizontal_pan, name="Map-style H pan",
+            ),
+            pn.widgets.Checkbox.from_param(
+                self.param.viewport_loading, name="Full-res when zoomed",
             ),
             "---",
             pn.widgets.Select.from_param(self.param.background_survey, name="Background"),

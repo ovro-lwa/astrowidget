@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from astropy.coordinates import SkyCoord
     from astropy.wcs import WCS
 
+    from astrowidget.cube import CubeWindow
     from astrowidget.wcs import ViewReprojectGeometry
 
 _STATIC = Path(__file__).parent / "static"
@@ -30,6 +31,17 @@ _JS_PATH = _STATIC / "widget.js"
 _VIEW_GESTURE_DEBOUNCE_S = 0.3
 _REPROJECT_MAP_CACHE_SIZE = 4
 _PROFILE_PUSH = os.environ.get("ASTROWIDGET_PROFILE_PUSH") == "1"
+# Viewport loading pads the visible pixel box by this fraction of its size on
+# every side, so short pans stay inside the loaded window.
+_VIEWPORT_MARGIN = 0.5
+
+
+def _center_key(center: SkyCoord | None) -> tuple[float, float] | None:
+    """Rounded ICRS ``(ra, dec)`` used to compare reprojection centers."""
+    if center is None:
+        return None
+    icrs = center.icrs
+    return (round(float(icrs.ra.deg), 5), round(float(icrs.dec.deg), 5))
 
 
 class SkyWidget(anywidget.AnyWidget):
@@ -74,6 +86,11 @@ class SkyWidget(anywidget.AnyWidget):
     # --- View-locked overlay (reproject texture to match view center after pan) ---
     overlay_view_lock = traitlets.Bool(False).tag(sync=True)
     view_gesture_revision = traitlets.Int(0).tag(sync=True)
+
+    # --- Viewport loading (Python only) ---
+    # When on, a zoomed-in view loads only the zarr chunks it covers, at up to
+    # full resolution, instead of the whole strided image (issue #34).
+    viewport_loading = traitlets.Bool(False)
 
     invert_horizontal_pan = traitlets.Bool(True).tag(sync=True)  # map-style horizontal pan (default)
 
@@ -124,10 +141,31 @@ class SkyWidget(anywidget.AnyWidget):
         self._ds = None
         self._var = "SKY"
         self._display_wcs = None
+        self._display_wcs_time: int | None = None
+        self._full_wcs = None
+        self._frame_window: CubeWindow | None = None
+        self._frame_center: tuple[float, float] | None = None
+        self._external_frame = False
+        self._gesture_pending = False
         self._aladin = None
         self._suppress_slice_observer = False
         self._suppress_gesture_observer = False
         self._gesture_reproject_timer: threading.Timer | None = None
+        # Guards frame state between the caller's thread and the debounce
+        # timer thread. ``_frame_generation`` is a request counter: it
+        # increases when a cube load is requested (slice change, pan/zoom,
+        # refresh) and on every pushed frame or dataset/overlay reset. A cube
+        # load publishes only if its request is still the newest, so the
+        # newest request wins however the loads finish. ``_requested_window``
+        # / ``_requested_center`` are what the newest request will show; the
+        # "already showing this view" checks compare against them rather
+        # than against the shown frame, so a request that matches an older
+        # in-flight load still supersedes it.
+        self._requested_window: CubeWindow | None = None
+        self._requested_center: tuple[float, float] | None = None
+        self._frame_lock = threading.RLock()
+        self._frame_generation = 0
+        self._last_load_ms = 0.0
         self._reproject_map_cache: OrderedDict[tuple, object] = OrderedDict()
         self._view_geometry_cache: ViewReprojectGeometry | None = None
         self._view_geometry_key: tuple | None = None
@@ -135,6 +173,8 @@ class SkyWidget(anywidget.AnyWidget):
         self._last_reproject_shape: tuple[int, int] | None = None
         self.observe(self._on_slice_change, names=["time_idx", "freq_idx"])
         self.observe(self._on_view_gesture_revision, names=["view_gesture_revision"])
+        self.observe(self._on_view_change, names=["view_ra", "view_dec", "view_fov"])
+        self.observe(self._on_viewport_loading_change, names=["viewport_loading"])
 
     def _clear_reproject_map_cache(self) -> None:
         self._reproject_map_cache.clear()
@@ -197,17 +237,30 @@ class SkyWidget(anywidget.AnyWidget):
         wcs: WCS,
         view_ra: float,
         view_dec: float,
+        *,
+        output_template: WCS | None = None,
     ) -> tuple[np.ndarray, WCS]:
+        """Warp *data* onto a naive SIN grid centered on the view.
+
+        The output grid takes ``CDELT``/``CRPIX`` from *output_template*
+        (default *wcs*). Windowed frames pass a template whose ``CRPIX`` is the
+        array center, so the output covers the window rather than the
+        window's offset from the phase center.
+        """
         from astrowidget.wcs import (
             apply_reproject_maps,
             build_reproject_maps_from_view_geometry,
+            reproject_output_scale_fingerprint,
         )
 
-        cache_key = self._reproject_cache_key(wcs, data.shape, view_ra, view_dec)
+        template = wcs if output_template is None else output_template
+        cache_key = self._reproject_cache_key(wcs, data.shape, view_ra, view_dec) + (
+            reproject_output_scale_fingerprint(template),
+        )
         maps = self._reproject_map_cache.get(cache_key)
         if maps is None:
             view_geometry = self._get_or_build_view_geometry(
-                wcs, data.shape, view_ra, view_dec
+                template, data.shape, view_ra, view_dec
             )
             maps = build_reproject_maps_from_view_geometry(wcs, view_geometry)
             self._reproject_map_cache[cache_key] = maps
@@ -217,29 +270,224 @@ class SkyWidget(anywidget.AnyWidget):
             self._reproject_map_cache.move_to_end(cache_key)
         return apply_reproject_maps(data, maps), maps.wcs_out
 
-    def _update_display_wcs(self) -> None:
-        """Rebuild display WCS for the current time slice (strided to cube resolution)."""
+    def _update_display_wcs(self, *, generation: int | None = None) -> None:
+        """Rebuild display WCS for the current time slice (strided to cube resolution).
+
+        With ``generation`` set, the result is stored only if that request
+        is still the newest, so a superseded call cannot overwrite the WCS
+        a newer call prepared. In every case it is stored only if
+        ``time_idx`` has not moved since the build started.
+        """
         from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
 
-        if self._ds is None or self._cube is None:
+        ds, cube, var = self._ds, self._cube, self._var
+        if ds is None or cube is None:
             return
-        wcs = get_wcs(self._ds, var=self._var, time_idx=self.time_idx)
-        self._display_wcs = adjust_wcs_for_array_stride(
-            wcs, self._cube.stride_l, self._cube.stride_m
+        wcs_time = int(self.time_idx)
+        wcs = get_wcs(ds, var=var, time_idx=wcs_time)
+        display = adjust_wcs_for_array_stride(wcs, cube.stride_l, cube.stride_m)
+        with self._frame_lock:
+            if generation is not None and generation != self._frame_generation:
+                return
+            if int(self.time_idx) != wcs_time:
+                return
+            self._full_wcs = wcs
+            self._display_wcs = display
+            self._display_wcs_time = wcs_time
+
+    def _wcs_stale(self) -> bool:
+        """True when the display WCS was built for another time than ``time_idx``.
+
+        A superseded :meth:`update_slice` can leave ``time_idx`` ahead of the
+        WCS it never finished building. Call with the frame lock held.
+        """
+        return self._ds is not None and self._display_wcs_time != int(self.time_idx)
+
+    def _viewport_window(
+        self,
+        view_ra: float | None = None,
+        view_dec: float | None = None,
+        view_fov: float | None = None,
+    ) -> CubeWindow | None:
+        """Cube window for a view, or ``None`` to use the full strided image."""
+        from astrowidget.wcs import view_pixel_bbox
+
+        if not self.viewport_loading or self._cube is None or self._full_wcs is None:
+            return None
+        bbox = view_pixel_bbox(
+            self._full_wcs,
+            self.view_ra if view_ra is None else float(view_ra),
+            self.view_dec if view_dec is None else float(view_dec),
+            self.view_fov if view_fov is None else float(view_fov),
         )
+        if bbox is None:
+            return None
+        l_min, l_max, m_min, m_max = bbox
+        pad_l = (l_max - l_min) * _VIEWPORT_MARGIN
+        pad_m = (m_max - m_min) * _VIEWPORT_MARGIN
+        return self._cube.window_for_pixel_bbox(
+            l_min - pad_l, l_max + pad_l, m_min - pad_m, m_max + pad_m
+        )
+
+    def _cube_frame(
+        self,
+        window: CubeWindow | None,
+        center: SkyCoord | None,
+    ) -> tuple[np.ndarray, WCS, SkyCoord | None, WCS | None]:
+        """Load the current slice for *window*.
+
+        Returns ``(data, wcs, reproject_center, output_template)`` for
+        :meth:`_push_image_frame`. The full strided image keeps the existing
+        reprojection behavior. A window carries its own offset WCS; when it
+        must be warped (view lock, explicit center, or a header the shader
+        cannot draw natively) it is warped onto a grid centered on the window
+        instead of on the phase center.
+        """
+        from astrowidget.wcs import (
+            adjust_wcs_for_window,
+            wcs_projection_matches_naive_shader,
+        )
+
+        if window is None:
+            data = self._cube.image(self.time_idx, self.freq_idx)
+            return data, self._display_wcs, None, None
+
+        data = self._cube.window_image(self.time_idx, self.freq_idx, window)
+        wcs = adjust_wcs_for_window(
+            self._full_wcs,
+            window.l_start,
+            window.m_start,
+            window.stride_l,
+            window.stride_m,
+        )
+        if center is None and wcs_projection_matches_naive_shader(wcs):
+            return data, wcs, None, None
+        template = wcs.deepcopy()
+        template.wcs.crpix = [(data.shape[0] + 1) / 2.0, (data.shape[1] + 1) / 2.0]
+        reproject_center = None
+        if center is None:
+            import astropy.units as u
+            from astropy.coordinates import SkyCoord
+
+            ra, dec = wcs.all_pix2world(
+                (data.shape[0] - 1) / 2.0, (data.shape[1] - 1) / 2.0, 0
+            )
+            reproject_center = SkyCoord(
+                ra=float(ra) * u.deg, dec=float(dec) * u.deg, frame="icrs"
+            )
+        return data, wcs, reproject_center, template
+
+    def _push_cube_frame(
+        self,
+        *,
+        center: SkyCoord | None = None,
+        fov: u.Quantity | None = None,
+        update_view: bool = True,
+        percentile_low: float = 1.0,
+        percentile_high: float = 99.0,
+        rescale: bool = True,
+        window_view: tuple[float, float, float] | None = None,
+        generation: int | None = None,
+    ) -> CubeWindow | None:
+        """Load the current slice (windowed when viewport loading applies) and push it.
+
+        ``window_view`` is the ``(ra, dec, fov)`` the window is chosen for;
+        it defaults to the current view traits. Without ``generation`` this
+        starts a new request (superseding any load in flight). Callers that
+        claimed their request earlier (:meth:`_claim_request` /
+        :meth:`_begin_cube_request`) pass that ``generation``; if a newer
+        request has been claimed since, nothing is loaded. The frame is
+        published only if no newer request, pushed frame or reset happened
+        by the end of the load; otherwise the load is discarded. In both
+        cases the shown window is returned unchanged.
+        """
+        with self._frame_lock:
+            if generation is None:
+                generation = self._claim_request()
+            elif generation != self._frame_generation:
+                return self._frame_window
+            wcs_stale = self._wcs_stale()
+        if wcs_stale:
+            # Never pair one time's pixels with another time's WCS, and pick
+            # the window with the WCS the frame will be shown on.
+            self._update_display_wcs(generation=generation)
+        with self._frame_lock:
+            if generation != self._frame_generation:
+                return self._frame_window
+            window = self._viewport_window(*(window_view or ()))
+            self._requested_window = window
+            self._requested_center = _center_key(center)
+        try:
+            t_load = time.perf_counter()
+            data, wcs, reproject_center, template = self._cube_frame(window, center)
+            self._last_load_ms = (time.perf_counter() - t_load) * 1000.0
+        except Exception:
+            with self._frame_lock:
+                if generation != self._frame_generation:
+                    # Superseded (e.g. the dataset was swapped mid-read); its
+                    # result would have been discarded anyway.
+                    return self._frame_window
+                self._requested_window = self._frame_window
+                self._requested_center = self._frame_center
+            raise
+        with self._frame_lock:
+            if generation != self._frame_generation:
+                return self._frame_window
+            self._push_image_frame(
+                data,
+                wcs,
+                advance_generation=False,
+                percentile_low=percentile_low,
+                percentile_high=percentile_high,
+                center=center,
+                fov=fov,
+                update_view=update_view,
+                reproject_center=reproject_center,
+                output_template=template,
+                rescale=rescale,
+            )
+            self._frame_window = window
+            self._frame_center = _center_key(center)
+            self._external_frame = False
+        return window
 
     def _refresh_slice(self, *, update_wcs: bool = False) -> None:
         """Load the current slice once and push a single image update to JS."""
         if self._cube is None:
             return
-        if update_wcs:
-            self._update_display_wcs()
+        with self._frame_lock:
+            generation = self._claim_request()
+            # A superseded update_slice can leave time_idx set before it built
+            # that time's WCS, so check the WCS's own time, not just the trait.
+            needs_wcs = update_wcs or self._display_wcs_time != int(self.time_idx)
+        if needs_wcs:
+            self._update_display_wcs(generation=generation)
         if self._display_wcs is None:
             return
-        self._push_image_frame(
-            self._cube.image(self.time_idx, self.freq_idx),
-            self._display_wcs,
-        )
+        self._push_cube_frame(generation=generation)
+
+    def _claim_request(self) -> int:
+        """Claim a new request token; call with the frame lock held.
+
+        Supersedes every request claimed earlier. A caller claims once, at
+        entry, and carries the token through WCS preparation, loading and
+        publication, so an older call can never re-enter as a newer request.
+        """
+        self._frame_generation += 1
+        return self._frame_generation
+
+    def _begin_cube_request(
+        self, window: CubeWindow | None, center: SkyCoord | None
+    ) -> int:
+        """Claim a cube load request and record what it will show.
+
+        Call with the frame lock held. Returns the generation to pass to
+        :meth:`_push_cube_frame`.
+        """
+        self._claim_request()
+        self._requested_window = window
+        self._requested_center = _center_key(center)
+        return self._frame_generation
 
     def _percentile_limits(
         self,
@@ -254,6 +502,21 @@ class SkyWidget(anywidget.AnyWidget):
         return float(lo), float(hi)
 
     def _push_image_frame(
+        self, data: np.ndarray, wcs: WCS, *, advance_generation: bool = True, **kwargs
+    ) -> None:
+        """Publish a frame under the frame lock.
+
+        By default this advances the generation, so any cube load in flight
+        is discarded (pushed frames and resets). Cube loads pass
+        ``advance_generation=False``: their request already advanced it.
+        See :meth:`_publish_image_frame` for the keyword arguments.
+        """
+        with self._frame_lock:
+            if advance_generation:
+                self._frame_generation += 1
+            self._publish_image_frame(data, wcs, **kwargs)
+
+    def _publish_image_frame(
         self,
         data: np.ndarray,
         wcs: WCS,
@@ -264,12 +527,20 @@ class SkyWidget(anywidget.AnyWidget):
         fov: u.Quantity | None = None,
         update_view: bool = True,
         reproject: bool = True,
+        reproject_center: SkyCoord | None = None,
+        output_template: WCS | None = None,
+        rescale: bool = True,
     ) -> None:
         """Send image bytes, WCS, scaling, and optional view in one frontend draw.
 
         ``reproject=False`` uploads ``data`` and ``wcs`` unchanged. Callers that
         already warped onto the naive SIN shader grid use this so a second
         view-centered warp does not run.
+
+        ``reproject_center`` overrides ``center`` as the warp center only
+        (the view is still set from ``center``); ``output_template`` sets the
+        output grid scale (see :meth:`_reproject_with_cached_maps`).
+        ``rescale=False`` keeps the current ``vmin``/``vmax``.
         """
         from astropy.wcs import WCS as AstropyWCS
 
@@ -290,15 +561,18 @@ class SkyWidget(anywidget.AnyWidget):
         if reproject:
             from astrowidget.wcs import should_skip_shader_reproject
 
-            if center is not None:
-                view_ra = float(center.icrs.ra.deg)
-                view_dec = float(center.icrs.dec.deg)
+            warp_center = reproject_center if reproject_center is not None else center
+            if warp_center is not None:
+                view_ra = float(warp_center.icrs.ra.deg)
+                view_dec = float(warp_center.icrs.dec.deg)
             else:
                 view_ra = float(wcs.wcs.crval[0])
                 view_dec = float(wcs.wcs.crval[1])
             skipped_reproject = should_skip_shader_reproject(wcs, view_ra, view_dec)
             if not skipped_reproject:
-                data, wcs = self._reproject_with_cached_maps(data, wcs, view_ra, view_dec)
+                data, wcs = self._reproject_with_cached_maps(
+                    data, wcs, view_ra, view_dec, output_template=output_template
+                )
         else:
             skipped_reproject = True
         reproject_ms = (time.perf_counter() - t_reproject) * 1000.0
@@ -306,7 +580,11 @@ class SkyWidget(anywidget.AnyWidget):
         self._wcs = wcs
         self._current_data = data
 
-        limits = self._percentile_limits(data, percentile_low, percentile_high)
+        limits = (
+            self._percentile_limits(data, percentile_low, percentile_high)
+            if rescale
+            else None
+        )
         cel = wcs.celestial
         t_trait = time.perf_counter()
         with self.hold_trait_notifications():
@@ -367,7 +645,21 @@ class SkyWidget(anywidget.AnyWidget):
         if data.ndim != 2:
             raise ValueError(f"data must be 2D, got {data.ndim}D")
 
-        self._push_image_frame(data, wcs)
+        with self._frame_lock:
+            self._push_image_frame(data, wcs)
+            self._mark_external_frame()
+
+    def _mark_external_frame(self) -> None:
+        """Record that the shown frame did not come from the cube.
+
+        Viewport loading then leaves it alone instead of replacing it with a
+        cube window on the next pan or zoom.
+        """
+        self._frame_window = None
+        self._frame_center = None
+        self._requested_window = None
+        self._requested_center = None
+        self._external_frame = True
 
     def push_shader_frame(
         self,
@@ -386,13 +678,13 @@ class SkyWidget(anywidget.AnyWidget):
         full-plane slice observer.
         """
         suppress_slice = self._suppress_slice_observer
+        self._frame_lock.acquire()
         self._suppress_slice_observer = True
         self._suppress_gesture_observer = True
         try:
             if time_idx is not None:
-                time_changed = int(time_idx) != int(self.time_idx)
                 self.time_idx = int(time_idx)
-                if time_changed or self._display_wcs is None:
+                if self._display_wcs is None or self._display_wcs_time != int(time_idx):
                     self._update_display_wcs()
             if freq_idx is not None:
                 self.freq_idx = int(freq_idx)
@@ -406,9 +698,11 @@ class SkyWidget(anywidget.AnyWidget):
                 update_view=False,
                 reproject=False,
             )
+            self._mark_external_frame()
         finally:
             self._suppress_slice_observer = suppress_slice
             self._suppress_gesture_observer = False
+            self._frame_lock.release()
 
     def view_center_skycoord(self) -> SkyCoord:
         """Return the current view center as an ICRS sky coordinate."""
@@ -418,20 +712,81 @@ class SkyWidget(anywidget.AnyWidget):
         return SkyCoord(ra=self.view_ra * u.deg, dec=self.view_dec * u.deg, frame="icrs")
 
     def _cancel_gesture_reproject_timer(self) -> None:
-        if self._gesture_reproject_timer is not None:
-            self._gesture_reproject_timer.cancel()
-            self._gesture_reproject_timer = None
+        """Cancel a pending debounce. A callback already running is not
+        stopped; the frame generation check discards its result instead."""
+        with self._frame_lock:
+            if self._gesture_reproject_timer is not None:
+                self._gesture_reproject_timer.cancel()
+                self._gesture_reproject_timer = None
 
     def _schedule_reproject_at_view(self) -> None:
-        self._cancel_gesture_reproject_timer()
-        timer = threading.Timer(_VIEW_GESTURE_DEBOUNCE_S, self._run_debounced_reproject_at_view)
-        timer.daemon = True
-        self._gesture_reproject_timer = timer
-        timer.start()
+        with self._frame_lock:
+            self._cancel_gesture_reproject_timer()
+            timer = threading.Timer(
+                _VIEW_GESTURE_DEBOUNCE_S, self._run_debounced_reproject_at_view
+            )
+            timer.daemon = True
+            self._gesture_reproject_timer = timer
+            timer.start()
 
     def _run_debounced_reproject_at_view(self) -> None:
-        self._gesture_reproject_timer = None
-        self.reproject_at_view()
+        """One debounced refresh after pan/zoom (view lock and/or viewport loading).
+
+        Both triggers share this timer so a gesture never loads twice. Under
+        view lock, a frontend gesture always re-warps (as before viewport
+        loading existed); a view change alone re-warps only when the shown
+        frame no longer matches the view, so a Python ``update_slice(center=…)``
+        is not warped twice. Navigation keeps ``vmin``/``vmax`` and never
+        replaces a frame pushed with ``set_image`` / ``push_shader_frame``.
+
+        Runs on the timer thread. The decision and the request are made
+        together under the frame lock, then the slice is loaded outside it
+        and published only if this is still the newest request and no frame
+        was pushed and no dataset or overlay reset happened since. A view
+        that matches the window an older in-flight load is fetching does not
+        load again; any other view supersedes that load.
+        """
+        with self._frame_lock:
+            if self._gesture_reproject_timer is threading.current_thread():
+                self._gesture_reproject_timer = None
+            gesture, self._gesture_pending = self._gesture_pending, False
+            if self._external_frame or self._cube is None or self._display_wcs is None:
+                return
+            if self.image_shape == (0, 0):
+                return
+            view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
+            window = self._viewport_window(*view)
+            # With a stale WCS the window above is not the one that will be
+            # loaded, so it cannot prove the view is already covered.
+            wcs_stale = self._wcs_stale()
+            if self.overlay_view_lock:
+                if not (gesture or wcs_stale or self._lock_frame_stale()):
+                    return
+                center = self.view_center_skycoord()
+            elif not self._viewport_refresh_applies() or (
+                window == self._requested_window and not wcs_stale
+            ):
+                return
+            else:
+                center = None
+            generation = self._begin_cube_request(window, center)
+        self._push_cube_frame(
+            center=center,
+            update_view=False,
+            rescale=False,
+            window_view=view,
+            generation=generation,
+        )
+
+    def _lock_frame_stale(self) -> bool:
+        """True when the newest view-locked request no longer matches the view."""
+        if not self._viewport_refresh_applies():
+            return False
+        center = (round(float(self.view_ra), 5), round(float(self.view_dec), 5))
+        return (
+            self._requested_center != center
+            or self._viewport_window() != self._requested_window
+        )
 
     def _on_view_gesture_revision(self, _change) -> None:
         """Debounced handler: reproject overlay to current view after pan/zoom."""
@@ -440,7 +795,70 @@ class SkyWidget(anywidget.AnyWidget):
         self._clear_view_geometry_cache()
         if self._cube is None or self.image_shape == (0, 0):
             return
+        self._gesture_pending = True
         self._schedule_reproject_at_view()
+
+    def _viewport_refresh_applies(self) -> bool:
+        return (
+            self.viewport_loading
+            and self._cube is not None
+            and self._display_wcs is not None
+            and not self._external_frame
+            and self.image_shape != (0, 0)
+        )
+
+    def _on_view_change(self, _change) -> None:
+        """Debounced handler: reload the viewport window after the view moves."""
+        if self._suppress_gesture_observer or not self._viewport_refresh_applies():
+            return
+        self._schedule_reproject_at_view()
+
+    def _on_viewport_loading_change(self, _change) -> None:
+        """Switch between windowed and full-image loading immediately."""
+        if self._suppress_gesture_observer or self._cube is None:
+            return
+        if self._external_frame or self._display_wcs is None or self.image_shape == (0, 0):
+            return
+        with self._frame_lock:
+            view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
+            window = self._viewport_window(*view)
+            if self.overlay_view_lock:
+                center = self.view_center_skycoord()
+            elif window == self._requested_window:
+                return
+            else:
+                center = None
+            generation = self._begin_cube_request(window, center)
+        self._push_cube_frame(
+            center=center,
+            update_view=False,
+            rescale=False,
+            window_view=view,
+            generation=generation,
+        )
+
+    def refresh_viewport(self) -> CubeWindow | None:
+        """Reload the current slice for the current view when viewport loading is on.
+
+        Loads only when the view needs a different window than the one shown
+        (zoomed in further, panned past the loaded margin, or zoomed back out
+        to the full image). Keeps ``vmin``/``vmax`` so the color scale does
+        not jump while navigating. Returns the window now shown (``None`` =
+        full strided image). Safe to call from another thread: the newest
+        request wins, so if a later navigation, slice change or pushed frame
+        overtakes this load, the load is discarded.
+        """
+        with self._frame_lock:
+            if not self._viewport_refresh_applies():
+                return self._frame_window
+            view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
+            window = self._viewport_window(*view)
+            if window == self._requested_window and not self._wcs_stale():
+                return self._frame_window
+            generation = self._begin_cube_request(window, None)
+        return self._push_cube_frame(
+            update_view=False, rescale=False, window_view=view, generation=generation
+        )
 
     def reproject_at_view(
         self,
@@ -452,28 +870,38 @@ class SkyWidget(anywidget.AnyWidget):
 
         No-op when ``overlay_view_lock`` is false, no cube is loaded, or the
         overlay was cleared. Does not change view traits (``update_view=False``).
+        With ``viewport_loading`` on, the slice is windowed to the view.
+        An explicit call rescales ``vmin``/``vmax`` and draws the cube slice
+        even over a pushed frame; the debounced pan/zoom path does neither.
+        Like :meth:`refresh_viewport`, a load overtaken by a newer request,
+        slice change or pushed frame is discarded.
         """
-        if not self.overlay_view_lock:
-            return
-        if self._cube is None or self._display_wcs is None:
-            return
-        if self.image_shape == (0, 0):
-            return
-        center = self.view_center_skycoord()
-        self._push_image_frame(
-            self._cube.image(self.time_idx, self.freq_idx),
-            self._display_wcs,
+        with self._frame_lock:
+            if not self.overlay_view_lock:
+                return
+            if self._cube is None or self._display_wcs is None:
+                return
+            if self.image_shape == (0, 0):
+                return
+            # Capture the view and claim the request under one lock, so an
+            # older call cannot claim later with a stale center.
+            center = self.view_center_skycoord()
+            view = (float(self.view_ra), float(self.view_dec), float(self.view_fov))
+            generation = self._begin_cube_request(self._viewport_window(*view), center)
+        self._push_cube_frame(
+            center=center,
+            update_view=False,
             percentile_low=percentile_low,
             percentile_high=percentile_high,
-            center=center,
-            fov=None,
-            update_view=False,
+            window_view=view,
+            generation=generation,
         )
 
     def clear_image(self) -> None:
         """Remove the radio overlay until the next :meth:`update_slice` / :meth:`set_image`."""
-        self._clear_reproject_caches()
-        with self.hold_trait_notifications():
+        with self._frame_lock, self.hold_trait_notifications():
+            self._frame_generation += 1
+            self._clear_reproject_caches()
             self.image_data = b""
             self.image_shape = (0, 0)
             self.image_revision += 1
@@ -538,14 +966,24 @@ class SkyWidget(anywidget.AnyWidget):
         from astrowidget.cube import PreloadedCube
         from astrowidget.wcs import get_wcs
 
-        self._clear_reproject_caches()
-        self._ds = ds
-        self._var = var
-        self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
+        with self._frame_lock:
+            self._frame_generation += 1
+            self._clear_reproject_caches()
+            self._cancel_gesture_reproject_timer()
+            self._ds = ds
+            self._var = var
+            self._cube = PreloadedCube(ds, var=var, pol=pol, max_size=max_size)
+            self._frame_window = None
+            self._frame_center = None
+            self._requested_window = None
+            self._requested_center = None
+            self._display_wcs_time = None
+            self._external_frame = False
 
         if defer_display:
             # Caller uses update_slice(); avoid trait updates that fire the slice observer.
             self._display_wcs = None
+            self._full_wcs = None
             return
 
         self._suppress_slice_observer = True
@@ -557,8 +995,9 @@ class SkyWidget(anywidget.AnyWidget):
         finally:
             self._suppress_slice_observer = False
 
-        # Display initial slice
-        self.set_image(self._cube.image(0, 0), self._display_wcs)
+        # Display initial slice (full strided image; the fitted FOV below
+        # shows the whole image, so a viewport window would not apply).
+        self._push_image_frame(self._cube.image(0, 0), self._display_wcs)
 
         # Navigate to phase center with FOV fitted to image extent (full-res WCS)
         import astropy.units as u
@@ -623,19 +1062,31 @@ class SkyWidget(anywidget.AnyWidget):
             raise RuntimeError("Call set_dataset() before update_slice()")
         use_view_lock = self.overlay_view_lock if view_lock is None else view_lock
         explicit_center = center is not None
-        if use_view_lock and center is None:
-            center = self.view_center_skycoord()
-        time_changed = int(time_idx) != int(self.time_idx)
         scale_low = 1.0 if percentile_low is None else float(percentile_low)
         scale_high = 99.0 if percentile_high is None else float(percentile_high)
         self._suppress_slice_observer = True
         self._suppress_gesture_observer = True
         try:
-            with self.hold_trait_notifications():
-                self.time_idx = int(time_idx)
-                self.freq_idx = int(freq_idx)
-            if time_changed or self._display_wcs is None:
-                self._update_display_wcs()
+            with self._frame_lock:
+                # Claim this request once, together with the slice traits and
+                # the view-lock center, so they agree with the request order.
+                # The token is carried through WCS preparation, loading and
+                # publication; if a newer request is claimed meanwhile, this
+                # call stops and leaves the newer one's state alone.
+                generation = self._claim_request()
+                if use_view_lock and center is None:
+                    center = self.view_center_skycoord()
+                with self.hold_trait_notifications():
+                    self.time_idx = int(time_idx)
+                    self.freq_idx = int(freq_idx)
+                needs_wcs = (
+                    self._display_wcs is None or self._display_wcs_time != int(time_idx)
+                )
+            if needs_wcs:
+                self._update_display_wcs(generation=generation)
+            with self._frame_lock:
+                if generation != self._frame_generation:
+                    return
             if self._display_wcs is None:
                 msg = (
                     f"Could not build display WCS for time_idx={int(time_idx)}, "
@@ -643,21 +1094,29 @@ class SkyWidget(anywidget.AnyWidget):
                 )
                 raise RuntimeError(msg)
             t_update = time.perf_counter()
-            t_zarr = time.perf_counter()
-            slice_data = self._cube.image(self.time_idx, self.freq_idx)
-            zarr_ms = (time.perf_counter() - t_zarr) * 1000.0
-            self._push_image_frame(
-                slice_data,
-                self._display_wcs,
+            import astropy.units as u
+
+            window_view = None
+            if center is not None:
+                window_view = (
+                    float(center.icrs.ra.deg),
+                    float(center.icrs.dec.deg),
+                    float(fov.to(u.deg).value) if fov is not None else float(self.view_fov),
+                )
+            elif fov is not None:
+                window_view = (self.view_ra, self.view_dec, float(fov.to(u.deg).value))
+            self._push_cube_frame(
                 percentile_low=scale_low,
                 percentile_high=scale_high,
                 center=center,
                 fov=fov,
                 update_view=fov is not None or not use_view_lock or explicit_center,
+                window_view=window_view,
+                generation=generation,
             )
             if _PROFILE_PUSH:
                 profile = dict(getattr(self, "_profile_last_push", {}))
-                profile["zarr_ms"] = zarr_ms
+                profile["zarr_ms"] = self._last_load_ms
                 profile["total_ms"] = (time.perf_counter() - t_update) * 1000.0
                 self._profile_last_push = profile
         finally:

@@ -96,16 +96,39 @@ cube = PreloadedCube(ds, var="SKY", pol=0, max_size=512)
 | `m_vals` | `ndarray` | Strided m coordinates |
 | `stride_l` | `int` | Downsampling stride (l axis) |
 | `stride_m` | `int` | Downsampling stride (m axis) |
+| `chunk_l`, `chunk_m` | `int` or `None` | Spatial chunk length (dask chunks, else zarr encoding) |
+| `full_window` | `CubeWindow` | Whole image at the cube's stride |
 | `bounds` | `tuple` | (l_min, m_min, l_max, m_max) |
 
 ### Methods
 
 | Method | Returns | Description |
 |---|---|---|
-| `image(time_idx, freq_idx)` | `ndarray (N,M)` | 2D display image (transposed) |
+| `image(time_idx, freq_idx)` | `ndarray (N,M)` | 2D display image in `(l, m)` order |
+| `lazy_image(time_idx, freq_idx, *, window=None, pol=None)` | `xr.DataArray` | The same selection, not yet read (dask stays lazy) |
+| `window_image(time_idx, freq_idx, window)` | `ndarray` | Sub-region at up to full resolution; reads only overlapping chunks |
+| `window_for_pixel_bbox(l_min, l_max, m_min, m_max)` | `CubeWindow` or `None` | Chunk-aligned window for a full-res pixel box; `None` if no sharper than `image()` |
 | `spectrum(l_idx, m_idx, time_idx)` | `ndarray (F,)` | Frequency spectrum at pixel |
 | `light_curve(l_idx, m_idx, freq_idx)` | `ndarray (T,)` | Time series at pixel |
 | `dynamic_spectrum(l_idx, m_idx)` | `ndarray (T,F)` | 2D time-freq waterfall |
+
+All selections are applied to the lazy array and computed once per call. The
+pixel traces read one spatial point (one chunk column), not whole images, and
+do not touch the slice cache. Pixel indices are display indices (`l_vals` /
+`m_vals`); out-of-range indices raise `IndexError`. Results are `float32`.
+
+## CubeWindow
+
+```python
+from astrowidget import CubeWindow
+
+win = CubeWindow(l_start, l_stop, m_start, m_stop, stride_l=1, stride_m=1)
+```
+
+Frozen, hashable description of `data[l_start:l_stop:stride_l, m_start:m_stop:stride_m]`
+in full-resolution pixel indices. `win.shape` is the strided shape; pair it with
+`adjust_wcs_for_window(wcs, win.l_start, win.m_start, win.stride_l, win.stride_m)`
+for the matching WCS.
 | `nearest_lm_idx(l, m)` | `(int, int)` | Nearest display pixel for (l,m) |
 
 ## DataSourceError

@@ -147,7 +147,8 @@ void main() {
     // px/py are 0-based WCS axis 1/2; texture is (width=n_m, height=n_l) from numpy (l, m).
     float px = l/u_cdelt.x + u_crpix.x - 1.0;
     float py = m/u_cdelt.y + u_crpix.y - 1.0;
-    vec2 uv = vec2(py/u_imageSize.x, px/u_imageSize.y);
+    // Texel k covers 0-based pixels [k - 0.5, k + 0.5); its center is uv (k + 0.5) / size.
+    vec2 uv = vec2((py + 0.5)/u_imageSize.x, (px + 0.5)/u_imageSize.y);
 
     // Outside image bounds
     if (uv.x<0.0||uv.x>1.0||uv.y<0.0||uv.y>1.0) {
@@ -724,8 +725,11 @@ export async function render({ model, el }) {
     model.on("change:crval", () => { syncWCS(); });
     model.on("change:cdelt", () => { syncWCS(); });
     model.on("change:crpix", () => { syncWCS(); });
-    model.on("change:vmin", () => { syncDisplay(); uploadImage(); });
-    model.on("change:vmax", () => { syncDisplay(); uploadImage(); });
+    // Manual vmin/vmax changes arrive without an image_revision bump, so they
+    // must redraw themselves. scheduleDraw coalesces with the redraw of a
+    // Python batch that also bumps image_revision.
+    model.on("change:vmin", () => { syncDisplay(); uploadImage(); scheduleDraw(); });
+    model.on("change:vmax", () => { syncDisplay(); uploadImage(); scheduleDraw(); });
     model.on("change:image_revision", () => {
       syncDisplay();
       syncImage();

@@ -50,6 +50,14 @@ remote = [
 ingest = [
     "xradio[all]>=0.0.59,<0.1",
 ]
+# dask.distributed cluster support for PreloadedCube reads (see docs/guides/performance.md).
+distributed = [
+    "dask[distributed]>=2024.1",
+]
+# pyperf benchmarks in benchmarks/.
+bench = [
+    "pyperf>=2.6",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
@@ -91,6 +99,8 @@ mkdocs = ">=1.6"
 mkdocs-material = ">=9.5"
 pymdown-extensions = ">=10.0"
 tomlkit = ">=0.13"
+pyperf = ">=2.6"
+distributed = ">=2024.1"
 
 [tool.pixi.tasks]
 build = "npm run build"
@@ -102,4 +112,5 @@ lint = "ruff check src/ tests/"
 docs-serve = { cmd = "mkdocs serve", description = "Serve docs locally at localhost:8000" }
 docs-build = { cmd = "mkdocs build --strict", description = "Build static docs site" }
 vectors = "python tests/generate_test_vectors.py"
+bench = { cmd = "python benchmarks/bench_cube.py", description = "Run PreloadedCube pyperf benchmarks (see benchmarks/README.md)" }
 sync-zenodo = { cmd = "python scripts/sync_zenodo.py", description = "Sync .zenodo.json and pyproject.toml authors from CITATION.cff" }

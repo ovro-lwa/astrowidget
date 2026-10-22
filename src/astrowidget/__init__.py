@@ -6,17 +6,19 @@ reading directly from zarr. No FITS intermediary in the display path.
 
 __version__ = "0.2.0"
 
-from astrowidget.cube import PreloadedCube
+from astrowidget.cube import CubeWindow, PreloadedCube
 from astrowidget.io import DataSourceError, open_dataset
-from astrowidget.wcs import adjust_wcs_for_array_stride, get_wcs
+from astrowidget.wcs import adjust_wcs_for_array_stride, adjust_wcs_for_window, get_wcs
 from astrowidget.widget import SkyWidget
 
 __all__ = [
     "SkyWidget",
     "open_dataset",
     "PreloadedCube",
+    "CubeWindow",
     "get_wcs",
     "adjust_wcs_for_array_stride",
+    "adjust_wcs_for_window",
     "DataSourceError",
 ]
 
