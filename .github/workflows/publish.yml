@@ -14,8 +14,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Copy JS widget (self-contained, no bundling needed)
-        run: cp js/inline_widget.js src/astrowidget/static/widget.js
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      # js/inline_widget.js imports sibling modules, so it must be bundled;
+      # copying it verbatim would ship unresolved relative imports.
+      - name: Build JS widget bundle
+        run: |
+          npm ci
+          npm run build
+          if grep -qE '^\s*import\b' src/astrowidget/static/widget.js; then
+            echo "widget.js still contains import statements" >&2
+            exit 1
+          fi
 
       - name: Install Python build tools
         run: pip install build

@@ -34,8 +34,11 @@ to analyzing changes)
      - Set `date-released:` to today's date in `YYYY-MM-DD` format
 
 6. Ensure the JS bundle is current:
-   - Copy `js/inline_widget.js` to `src/astrowidget/static/widget.js`
-   - Verify `src/astrowidget/static/widget.js` exists
+   - Rebuild it with `pixi run build` (vite bundles `js/inline_widget.js` and
+     its imports into `src/astrowidget/static/widget.js`). Do not copy
+     `inline_widget.js` directly: it imports sibling modules.
+   - Verify `src/astrowidget/static/widget.js` exists and contains no
+     `import` statements
 
 7. Run tests to verify everything works:
    ```bash
